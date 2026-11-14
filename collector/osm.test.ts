@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
-import { toMetro, toParks, type OsmElement } from './osm';
+import { sectorAt, within } from './geo';
+import { loadBoundaries, toMetro, toParks, type OsmElement } from './osm';
 
 const node = (id: number, name: string, lon: number, lat: number): OsmElement => ({
   type: 'node',
@@ -64,4 +65,13 @@ test('parks under a hectare are left out', () => {
     { type: 'way', id: 2, tags: { leisure: 'park', name: 'Parc' }, geometry: geom(big) },
   ]);
   expect(parks.features.map((f) => f.properties.name)).toEqual(['Parc']);
+});
+
+test('loadBoundaries reads the city and its six sectors from the site outlines', () => {
+  const b = loadBoundaries();
+  expect(b.sectors.map((s) => s.name)).toEqual(['Sectorul 1', 'Sectorul 2', 'Sectorul 3', 'Sectorul 4', 'Sectorul 5', 'Sectorul 6']);
+  expect(sectorAt([26.0864, 44.4527], b)).toBe('Sectorul 1'); // Piața Victoriei
+  expect(sectorAt([26.1712, 44.4186], b)).toBe('Sectorul 3'); // Parcul Titan
+  expect(within(b.city, [26.0864, 44.4527])).toBe(true);
+  expect(within(b.city, [26.0845, 44.5704])).toBe(false); // Otopeni, Ilfov
 });

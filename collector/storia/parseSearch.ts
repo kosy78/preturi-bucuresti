@@ -15,7 +15,9 @@ type Item = {
   developmentId: number | null;
   priceFromPerSquareMeter: unknown;
   investmentUnitsNumber: unknown;
+  createdAtFirst?: string | null;
   location?: {
+    mapDetails?: { radius?: number | null } | null;
     address?: { street?: { name?: string | null } | null } | null;
     reverseGeocoding?: { locations?: { locationLevel: string; name: string }[] } | null;
   } | null;
@@ -84,6 +86,8 @@ function toListing(item: Item): SearchListing | null {
     isNewDev: (item.developmentId ?? 0) > 0,
     fromPrice: item.priceFromPerSquareMeter != null || item.investmentUnitsNumber != null,
     postedAt: item.dateCreated,
+    radiusM: typeof item.location?.mapDetails?.radius === 'number' ? item.location.mapDetails.radius : null,
+    createdFirst: item.createdAtFirst ?? null,
   };
 }
 
