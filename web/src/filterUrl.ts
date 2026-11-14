@@ -1,12 +1,18 @@
 import { NO_FILTERS, type Filters } from './logic';
-import { fit, RANGES, type Range } from './sliders';
+import { exactLimit, fit, RANGES, type Range } from './sliders';
 
 export const YEARS = [1977, 1990, 2010, 2020];
 
 function int(v: string | null): number | null {
-  if (v === null || !/^\d{1,7}$/.test(v)) return null;
+  if (v === null || !/^\d{1,9}$/.test(v)) return null;
   const n = Number(v);
   return n > 0 ? n : null;
+}
+
+// Money limits can be typed, so they come back exactly; the other sliders snap to their steps.
+function money(v: string | null, r: Range): number | null {
+  const n = int(v);
+  return n === null ? null : exactLimit(n, r);
 }
 
 function ranged(v: string | null, r: Range): number | null {
@@ -38,8 +44,8 @@ export function fromQuery(q: string): Filters {
   const sector = /^[1-6]$/.test(p.get('sector') ?? '') ? `Sectorul ${p.get('sector')}` : null;
   return {
     ...NO_FILTERS,
-    maxTotal: ranged(p.get('buget'), RANGES.maxTotal),
-    maxPpm: ranged(p.get('ppm'), RANGES.maxPpm),
+    maxTotal: money(p.get('buget'), RANGES.maxTotal),
+    maxPpm: money(p.get('ppm'), RANGES.maxPpm),
     rooms: rooms.sort((a, b) => a - b),
     minM2: ranged(p.get('mp'), RANGES.minM2),
     minYear: year !== null && YEARS.includes(year) ? year : null,

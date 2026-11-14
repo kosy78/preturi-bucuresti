@@ -1,9 +1,10 @@
-import { copyFileSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, expect, test } from 'vitest';
-import { reason, runAnuntulDetails, runAnuntulSweep, runCollect, runDetails, runImobiliareImport, runSweep } from './cli';
+import { reason, runAnuntulDetails, runAnuntulSweep, runCollect, runDetails, runImobiliareImport, runSweep, shortfall, staleLock, takeLock } from './cli';
 import { BlockedError, HttpError } from './fetcher';
 import { openStore, type Store } from './store';
+import { parseSearchPage } from './storia/parseSearch';
 
 const SEARCH = 'https://www.storia.ro/ro/rezultate/vanzare/apartament/bucuresti?page=';
 
@@ -40,14 +41,18 @@ const detailPage = nextData({
 });
 const expiredPage = nextData({ props: { pageProps: {} } });
 
-// Three pages of two listings each; page n holds listings 2n-1 and 2n.
+const range = (from: number, count: number) => Array.from({ length: count }, (_, i) => from + i);
+// Half of Storia's 36 per page: the fewest a sweep accepts.
+const HALF_PAGE = 18;
+
+// Three pages of 18 listings each; page n holds listings 18(n-1)+1 to 18n.
 function pages(overrides: Record<number, () => string> = {}) {
   const requested: string[] = [];
   const get = async (url: string) => {
     requested.push(url);
     const page = Number(url.slice(SEARCH.length));
     if (overrides[page]) return overrides[page]();
-    return searchPage([2 * page - 1, 2 * page], 3);
+    return searchPage(range(HALF_PAGE * (page - 1) + 1, HALF_PAGE), 3);
   };
   return { get, requested };
 }
@@ -69,12 +74,12 @@ test('runSweep reads page 1, then pages 2..totalPages, and completes the sweep',
 
   expect(requested).toEqual([`${SEARCH}1`, `${SEARCH}2`, `${SEARCH}3`]);
   expect(store.lastCompleteSweep()).not.toBeNull();
-  expect(store.current().map((l) => l.id).sort()).toEqual(['storia:1', 'storia:2', 'storia:3', 'storia:4', 'storia:5', 'storia:6']);
-  expect(lines.at(-1)).toBe('Gata: 6 anunțuri citite, 0 sărite.');
+  expect(store.current()).toHaveLength(54);
+  expect(lines.at(-1)).toBe('Gata: 54 anunțuri citite, 0 sărite.');
 });
 
 test('runSweep blocked on page 3 fails the sweep and keeps the earlier sweep current', async () => {
-  await runSweep(store, async () => searchPage([100], 1), log);
+  await runSweep(store, async () => searchPage(range(100, HALF_PAGE), 1), log);
   const earlier = store.lastCompleteSweep();
 
   const { get } = pages({
@@ -85,7 +90,7 @@ test('runSweep blocked on page 3 fails the sweep and keeps the earlier sweep cur
   await expect(runSweep(store, get, log)).rejects.toBeInstanceOf(BlockedError);
 
   expect(store.lastCompleteSweep()).toEqual(earlier);
-  expect(store.current().map((l) => l.id)).toEqual(['storia:100']);
+  expect(store.current().map((l) => l.id).sort()).toEqual(range(100, HALF_PAGE).map((n) => `storia:${n}`).sort());
   expect(lines.at(-1)).toBe('Oprit: Storia a refuzat cererea (403). Datele de ieri rămân valabile.');
 });
 
@@ -97,12 +102,52 @@ test('runSweep fails the sweep when a page cannot be parsed', async () => {
 
 test('runSweep logs progress every 25 pages', async () => {
   let n = 0;
-  await runSweep(store, async () => searchPage([++n], 50), log);
-  expect(lines).toEqual(['Pagina 25 din 50 citită.', 'Pagina 50 din 50 citită.', 'Gata: 50 anunțuri citite, 0 sărite.']);
+  await runSweep(store, async () => searchPage(range(HALF_PAGE * n++ + 1, HALF_PAGE), 50), log);
+  expect(lines).toEqual(['Pagina 25 din 50 citită.', 'Pagina 50 din 50 citită.', 'Gata: 900 anunțuri citite, 0 sărite.']);
 });
 
+test('a sweep reading under half of 36 per page fails and the map keeps the earlier one', async () => {
+  await runSweep(store, async () => searchPage(range(100, HALF_PAGE), 1), () => {});
+  const earlier = store.lastCompleteSweep();
+
+  const { get } = pages({ 3: () => searchPage(range(37, HALF_PAGE - 1), 3) });
+  await expect(runSweep(store, get, log)).rejects.toThrow('prea puține anunțuri');
+
+  expect(store.lastCompleteSweep()).toEqual(earlier);
+  expect(lines.at(-1)).toBe(
+    'Oprit: colectarea a citit prea puține anunțuri (doar 53 de anunțuri pe 3 pagini), așa că nu o folosim. Datele de ieri rămân valabile.',
+  );
+});
+
+test('a sweep reading under 70 % of the last complete one fails', async () => {
+  await runSweep(store, async () => searchPage(range(1, 100), 1), () => {});
+  const earlier = store.lastCompleteSweep();
+
+  // 20 listings: under 70 % of the last sweep and not even filling the one page reported.
+  await expect(runSweep(store, async () => searchPage(range(1, 20), 1), log)).rejects.toThrow('prea puține anunțuri');
+  expect(store.lastCompleteSweep()).toEqual(earlier);
+  expect(store.current()).toHaveLength(100);
+  expect(lines.at(-1)).toContain('doar 20 de anunțuri, față de 100 la colectarea anterioară');
+
+  await runSweep(store, async () => searchPage(range(1, 70), 1), log);
+  expect(store.current()).toHaveLength(70);
+});
+
+test('shortfall compares with the last complete sweep when there is one, and always with the page count', () => {
+  expect(shortfall(18, 1, null)).toBeNull();
+  expect(shortfall(17, 1, null)).toBe('doar 17 anunțuri pe 1 pagină');
+  expect(shortfall(7000, 300, 10000)).toBeNull();
+  expect(shortfall(6999, 300, 10000)).toBe('doar 6 999 de anunțuri, față de 10 000 la colectarea anterioară');
+  // A market that really shrank fills its fewer pages, so it passes and cannot block collection for good.
+  expect(shortfall(216, 6, 360)).toBeNull();
+  expect(shortfall(5000, 300, 5000)).toBe('doar 5 000 de anunțuri pe 300 de pagini');
+});
+
+// Saved straight into the store: these tests are about details, not the sweep's size check.
 async function sweepOf(ids: number[]) {
-  await runSweep(store, async () => searchPage(ids, 1), () => {});
+  const id = store.startSweep();
+  store.saveSearchListings(id, parseSearchPage(searchPage(ids, 1)).listings);
+  store.finishSweep(id, true);
 }
 
 test('runDetails stops at the cap', async () => {
@@ -389,4 +434,40 @@ test('a step that fails without saying why gets an Oprit line; one that already 
   const { steps } = fakeSteps(['details']);
   await runCollect({ ...steps, anuntulDetails: async () => { throw new TypeError('fetch failed'); } }, log);
   expect(lines.filter((l) => l.startsWith('Oprit:'))).toEqual(['Oprit: details.', `Oprit: ${NETWORK}.`]);
+});
+
+test('staleLock: a lock is stale when its process is gone or it holds no pid', () => {
+  const alive = (pid: number) => pid === 4242;
+  expect(staleLock('4242', alive)).toBe(false);
+  expect(staleLock('4242\n', alive)).toBe(false);
+  expect(staleLock('9999', alive)).toBe(true);
+  // An empty lock was just created and is being written: held, until it has sat empty too long (next test).
+  expect(staleLock('', alive)).toBe(false);
+  expect(staleLock('not a pid', alive)).toBe(true);
+});
+
+test('takeLock refuses while the holder runs, takes over a stale lock and releases it', () => {
+  const path = `${mkdtempSync(`${tmpdir()}/lock-`)}/data/collect.lock`;
+  const release = takeLock(path);
+  if (typeof release === 'number') throw new Error('expected the lock');
+  expect(readFileSync(path, 'utf8')).toBe(String(process.pid));
+
+  expect(takeLock(path, () => true)).toBe(process.pid);
+
+  const takeover = takeLock(path, () => false);
+  expect(typeof takeover).toBe('function');
+  expect(readFileSync(path, 'utf8')).toBe(String(process.pid));
+  (takeover as () => void)();
+  expect(existsSync(path)).toBe(false);
+  release();
+  expect(existsSync(path)).toBe(false);
+});
+
+test('staleLock: an empty lock is being written and stays held for a short grace; any lock older than a day is stale', () => {
+  const dead = () => false;
+  const alive = () => true;
+  expect(staleLock('', dead, 500)).toBe(false);
+  expect(staleLock('', dead, 60_000)).toBe(true);
+  expect(staleLock('123', alive, 25 * 60 * 60 * 1000)).toBe(true);
+  expect(staleLock('123', alive, 60_000)).toBe(false);
 });

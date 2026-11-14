@@ -89,3 +89,15 @@ test('ignores decoy items whose link does not match their slug', () => {
   const decoy = { ...validItem, id: 9000000001, href: 'hpr/[lang]/ad/other-ID2' };
   expect(parseSearchPage(withItems([decoy, validItem]))).toMatchObject({ skipped: 0, listings: [{ id: 'storia:1' }] });
 });
+test('reads the privacy radius and first publication date from the fixture', () => {
+  const radii = new Set(page.listings.map((l) => l.radiusM));
+  expect([...radii].every((r) => typeof r === 'number' && r >= 0)).toBe(true);
+  expect(radii.has(0) && radii.has(500)).toBe(true);
+  for (const l of page.listings) expect(l.createdFirst).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$/);
+});
+test('radius and first publication date are null when missing', () => {
+  const [l] = parseSearchPage(withItems([validItem])).listings;
+  expect([l.radiusM, l.createdFirst]).toEqual([null, null]);
+  const [m] = parseSearchPage(withItems([{ ...validItem, createdAtFirst: '2026-09-01T10:00:00+00:00', location: { ...validItem.location, mapDetails: { radius: 1500 } } }])).listings;
+  expect([m.radiusM, m.createdFirst]).toEqual([1500, '2026-09-01T10:00:00+00:00']);
+});

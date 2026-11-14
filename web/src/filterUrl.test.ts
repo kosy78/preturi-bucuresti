@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fromQuery, toQuery } from './filterUrl';
+import { parseLimit, RANGES } from './sliders';
 import { NO_FILTERS, type Filters } from './logic';
 
 describe('filters in the query string', () => {
@@ -27,17 +28,15 @@ describe('filters in the query string', () => {
     expect(fromQuery('camere=3,x,1,3').rooms).toEqual([1, 3]);
   });
 
-  it('clamps values to each slider and snaps them to its step', () => {
+  it('keeps money limits exact, raised to the minimum, and snaps the other sliders to their step', () => {
     expect(fromQuery('buget=1').maxTotal).toBe(40_000);
-    expect(fromQuery('buget=187400').maxTotal).toBe(185_000);
-    expect(fromQuery('buget=188000').maxTotal).toBe(190_000);
-    expect(fromQuery('ppm=2649').maxPpm).toBe(2600);
+    expect(fromQuery('buget=187400').maxTotal).toBe(187_400);
+    expect(fromQuery('buget=600000').maxTotal).toBe(600_000);
+    expect(fromQuery('ppm=2649').maxPpm).toBe(2649);
     expect(fromQuery('mp=27').minM2).toBe(25);
   });
 
   it('reads a value at or past the no-limit end of a slider as no filter', () => {
-    expect(fromQuery('buget=500000').maxTotal).toBeNull();
-    expect(fromQuery('buget=9000000').maxTotal).toBeNull();
     expect(fromQuery('metrou=25').maxMetroMin).toBeNull();
     expect(fromQuery('metrou=900').maxMetroMin).toBeNull();
     expect(fromQuery('mp=20').minM2).toBeNull();
@@ -49,4 +48,12 @@ describe('filters in the query string', () => {
     expect(toQuery({ ...NO_FILTERS, sector: 'Sectorul 1' })).toBe('sector=1');
     for (const bad of ['0', '7', '3.5', 'x', '', '03a']) expect(fromQuery(`sector=${bad}`).sector).toBeNull();
   });
+});
+
+
+it('parseLimit keeps typed money exactly, raises it to the minimum, and only empty means no limit', () => {
+  expect(parseLimit('183 400 €', RANGES.maxTotal)).toBe(183400);
+  expect(parseLimit('', RANGES.maxTotal)).toBeNull();
+  expect(parseLimit('600 000', RANGES.maxTotal)).toBe(600000);
+  expect(parseLimit('10', RANGES.maxTotal)).toBe(40000);
 });

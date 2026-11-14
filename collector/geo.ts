@@ -1,6 +1,9 @@
 export type LngLat = [lng: number, lat: number];
 export type Named = { name: string; at: LngLat };
 export type NamedPolygon = { name: string; ring: LngLat[] };
+// GeoJSON MultiPolygon coordinates: polygons, each an outer ring followed by its holes.
+export type MultiPolygon = LngLat[][][];
+export type Boundaries = { city: MultiPolygon; sectors: { name: string; area: MultiPolygon }[] };
 
 const EARTH_RADIUS_M = 6_371_000;
 const rad = (deg: number) => (deg * Math.PI) / 180;
@@ -38,7 +41,7 @@ export function nearestPolygon(p: LngLat, polys: NamedPolygon[]): { name: string
   return { name: best.name, minutes: walkMinutes(best.m) };
 }
 
-function contains(ring: LngLat[], [x, y]: LngLat): boolean {
+export function contains(ring: LngLat[], [x, y]: LngLat): boolean {
   let inside = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
     const [xi, yi] = ring[i];
@@ -46,6 +49,14 @@ function contains(ring: LngLat[], [x, y]: LngLat): boolean {
     if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
   }
   return inside;
+}
+
+export function within(area: MultiPolygon, p: LngLat): boolean {
+  return area.some(([outer, ...holes]) => contains(outer, p) && !holes.some((h) => contains(h, p)));
+}
+
+export function sectorAt(p: LngLat, b: Boundaries): string | null {
+  return b.sectors.find((s) => within(s.area, p))?.name ?? null;
 }
 
 // Planar approximation around the ring's latitude; plenty for a "bigger than a hectare" cut-off.

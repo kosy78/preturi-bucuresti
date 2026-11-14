@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeSync, statSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Detail } from '../shared/types';
 import { parseAnuntulList } from './anuntul/parseList';
@@ -6,7 +7,7 @@ import { parseAnuntulMap } from './anuntul/parseMap';
 import { parseImobiliareList } from './imobiliare/parseList';
 import { BlockedError, HttpError, createFetcher } from './fetcher';
 import { runExport } from './export';
-import { loadParks, loadStations, runOsm } from './osm';
+import { loadBoundaries, loadParks, loadStations, runOsm } from './osm';
 import { openStore, type Store } from './store';
 import { parseDetailPage } from './storia/parseDetail';
 import { parseSearchPage } from './storia/parseSearch';
@@ -16,6 +17,17 @@ type Log = (line: string) => void;
 
 const SEARCH_URL = 'https://www.storia.ro/ro/rezultate/vanzare/apartament/bucuresti?page=';
 const DELAY_MS = 1200;
+const PAGE_SIZE = 36;
+// A run that ends without an error can still have been cut short (an empty page, a quiet block); it must not replace a full one.
+const MIN_SHARE_OF_PREVIOUS = 0.7;
+const MIN_SHARE_OF_PAGES = 0.5;
+// A complete sweep today reads about 94% of pages x page size (the last page is partial, development posts are skipped).
+const FULL_PAGES_SHARE = 0.85;
+// A lock file with no pid yet is being written by the process that just created it; only an old one is abandoned.
+const LOCK_WRITE_GRACE_MS = 10_000;
+// No collection runs this long; an older lock is left over, even if its pid now belongs to some other process.
+const LOCK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const LOCK_PATH = fileURLToPath(new URL('../data/collect.lock', import.meta.url));
 const STORE_PATH = fileURLToPath(new URL('../data/prices.sqlite', import.meta.url));
 // Its own file, so collecting Anuntul never touches the Storia database.
 const ANUNTUL_STORE_PATH = fileURLToPath(new URL('../data/anuntul.sqlite', import.meta.url));
@@ -30,7 +42,28 @@ const ANUNTUL_CATEGORIES = [
 ];
 const NO_POSITION: Detail = { lat: null, lng: null, precise: false, year: null, market: null };
 
+// A sweep is rejected when it is short against its own page count (pages went missing), or when it is far below the
+// last complete one and also not filling the pages it reports: a market that really shrank fills fewer, full pages and
+// passes, so a real drop cannot block collection for good.
+export function shortfall(read: number, totalPages: number, previous: number | null): string | null {
+  const fillsPages = read >= FULL_PAGES_SHARE * totalPages * PAGE_SIZE;
+  if (previous !== null && read < MIN_SHARE_OF_PREVIOUS * previous && !fillsPages) {
+    return `doar ${amount(read, 'anunț', 'anunțuri')}, față de ${count(previous)} la colectarea anterioară`;
+  }
+  if (read < MIN_SHARE_OF_PAGES * totalPages * PAGE_SIZE) return `doar ${amount(read, 'anunț', 'anunțuri')} pe ${amount(totalPages, 'pagină', 'pagini')}`;
+  return null;
+}
+
+// Romanian puts "de" between a number and its noun from 20 on, except when the last two digits are 01–19.
+function amount(n: number, one: string, many: string): string {
+  if (n === 1) return `1 ${one}`;
+  const rest = n % 100;
+  return rest === 0 || rest >= 20 ? `${count(n)} de ${many}` : `${count(n)} ${many}`;
+}
+
 export async function runSweep(store: Store, get: Get, log: Log): Promise<void> {
+  const previous = store.lastCompleteSweep();
+  const previousCount = previous ? store.listingCount(previous.id) : null;
   const sweepId = store.startSweep();
   let read = 0;
   let skipped = 0;
@@ -48,6 +81,8 @@ export async function runSweep(store: Store, get: Get, log: Log): Promise<void> 
       await readPage(n);
       if (n % 25 === 0) log(`Pagina ${n} din ${totalPages} citită.`);
     }
+    const short = shortfall(store.listingCount(sweepId), totalPages, previousCount);
+    if (short) throw new Error(`colectarea a citit prea puține anunțuri (${short}), așa că nu o folosim`);
     store.finishSweep(sweepId, true);
   } catch (e) {
     store.finishSweep(sweepId, false);
@@ -186,7 +221,7 @@ const commands: Record<string, (store: Store, get: Get, log: Log) => Promise<voi
     const anuntul = existsSync(ANUNTUL_STORE_PATH) ? openStore(ANUNTUL_STORE_PATH) : undefined;
     const imobiliare = existsSync(IMOBILIARE_STORE_PATH) ? openStore(IMOBILIARE_STORE_PATH) : undefined;
     try {
-      runExport(store, loadStations(), loadParks(), 'web/public/data', log, anuntul, imobiliare);
+      runExport(store, loadStations(), loadParks(), loadBoundaries(), 'web/public/data', log, anuntul, imobiliare);
     } catch (e) {
       log(`Oprit: ${reason(e)}.`);
       throw e;
@@ -199,6 +234,61 @@ const commands: Record<string, (store: Store, get: Get, log: Log) => Promise<voi
   'anuntul-sweep': runAnuntulSweep,
   'anuntul-details': (store, get, log) => runAnuntulDetails(store, get, log),
 };
+
+// A lock left by a process that no longer runs (a crash, a closed laptop lid) must not block the next collection.
+export function staleLock(contents: string, alive: (pid: number) => boolean, ageMs = 0): boolean {
+  if (ageMs > LOCK_MAX_AGE_MS) return true;
+  const text = contents.trim();
+  // Empty: created but not written yet, so held, unless it has sat empty for longer than any write takes.
+  if (text === '') return ageMs > LOCK_WRITE_GRACE_MS;
+  const pid = Number(text);
+  return !Number.isInteger(pid) || pid <= 0 || !alive(pid);
+}
+
+function running(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM: the process exists but belongs to another user.
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+// Returns a release function, or the pid of the collection already running.
+export function takeLock(path: string, alive = running): (() => void) | number {
+  mkdirSync(dirname(path), { recursive: true });
+  for (;;) {
+    try {
+      const fd = openSync(path, 'wx');
+      writeSync(fd, String(process.pid));
+      closeSync(fd);
+      let held = true;
+      return () => {
+        if (held) rmSync(path, { force: true });
+        held = false;
+      };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    }
+    let holder: string;
+    let age: number;
+    try {
+      holder = readFileSync(path, 'utf8');
+      age = Date.now() - statSync(path).mtimeMs;
+    } catch {
+      continue; // released between the two calls
+    }
+    if (!staleLock(holder, alive, age)) return Number(holder.trim()) || 0;
+    // Another process may have taken the stale lock over a moment ago: remove only the lock judged stale.
+    try {
+      if (readFileSync(path, 'utf8') !== holder) continue;
+    } catch {
+      continue;
+    }
+    rmSync(path, { force: true });
+  }
+}
 
 type Step = (log: Log) => Promise<void>;
 
@@ -245,6 +335,33 @@ async function main(command: string | undefined): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  let release = () => {};
+  if (command !== 'export' && command !== 'osm') {
+    const lock = takeLock(LOCK_PATH);
+    if (typeof lock === 'number') {
+      console.log(`Oprit: o altă colectare rulează deja${lock > 0 ? ` (procesul ${lock})` : ''}. Așteaptă să se termine, apoi încearcă din nou.`);
+      process.exitCode = 1;
+      return;
+    }
+    release = lock;
+    process.once('exit', release);
+    // Ctrl+C and a kill do not run 'exit' handlers by themselves: release the lock, then stop as the signal asked.
+    for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+      process.once(signal, () => {
+        release();
+        // The usual exit codes for a process stopped by these signals.
+        process.exit(signal === 'SIGINT' ? 130 : 143);
+      });
+    }
+  }
+  try {
+    await runCommand(command);
+  } finally {
+    release();
+  }
+}
+
+async function runCommand(command: string): Promise<void> {
   const get = createFetcher({ delayMs: DELAY_MS });
   const run = (name: string): Step => async (log) => {
     const store = openStore(name.startsWith('anuntul-') ? ANUNTUL_STORE_PATH : name.startsWith('imobiliare-') ? IMOBILIARE_STORE_PATH : STORE_PATH);

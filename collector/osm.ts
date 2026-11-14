@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { areaM2, type LngLat, type Named, type NamedPolygon } from './geo';
+import { areaM2, type Boundaries, type LngLat, type MultiPolygon, type Named, type NamedPolygon } from './geo';
 
 type Log = (line: string) => void;
 type Tags = Record<string, string>;
@@ -13,6 +13,7 @@ export type OsmElement =
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
 const METRO_PATH = 'web/public/data/metro.geojson';
 const PARKS_PATH = 'web/public/data/parks.geojson';
+const BOUNDARIES_PATH = 'web/public/data/boundaries.geojson';
 const BBOX = '44.33,25.95,44.55,26.25';
 const QUERY = `[out:json][timeout:180];
 (
@@ -171,4 +172,16 @@ export function loadStations(path = METRO_PATH): Named[] {
 
 export function loadParks(path = PARKS_PATH): NamedPolygon[] {
   return read(path).features.map((f) => ({ name: f.properties.name, ring: (f.geometry.coordinates as LngLat[][])[0] }));
+}
+
+export function loadBoundaries(path = BOUNDARIES_PATH): Boundaries {
+  const features = read(path).features;
+  const city = features.find((f) => f.properties.kind === 'city');
+  if (!city) throw new Error(`${path} has no city outline`);
+  return {
+    city: city.geometry.coordinates as MultiPolygon,
+    sectors: features
+      .filter((f) => f.properties.kind === 'sector')
+      .map((f) => ({ name: f.properties.name, area: f.geometry.coordinates as MultiPolygon })),
+  };
 }

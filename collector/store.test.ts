@@ -73,7 +73,51 @@ test('current() returns every search field as saved', () => {
   sweep(store, [l]);
 
   const [row] = store.current();
-  expect(row).toEqual({ ...l, firstSeen: expect.any(String), hasDetail: false });
+  expect(row).toEqual({ ...l, firstSeen: expect.any(String), hasDetail: false, peakTotal: l.total });
+});
+
+test('current() returns the privacy radius and first publication date when the site gives them', () => {
+  sweep(store, [listing(1, { radiusM: 1000, createdFirst: '2026-09-01T10:00:00+00:00' }), listing(2, { radiusM: null, createdFirst: null })]);
+  const byId = new Map(store.current().map((r) => [r.id, r]));
+  expect(byId.get('storia:1')).toMatchObject({ radiusM: 1000, createdFirst: '2026-09-01T10:00:00+00:00' });
+  expect(byId.get('storia:2')).not.toHaveProperty('radiusM');
+  expect(byId.get('storia:2')).not.toHaveProperty('createdFirst');
+});
+
+test('peakTotal keeps the highest price seen across sweeps', () => {
+  sweep(store, [listing(1, { total: 130000 })]);
+  sweep(store, [listing(1, { total: 120000 })]);
+  sweep(store, [listing(1, { total: 125000 })]);
+  expect(store.current()[0]).toMatchObject({ total: 125000, peakTotal: 130000 });
+});
+
+test('price history gets a row for a new listing and for a changed price, not for an unchanged one', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'store-test-'));
+  try {
+    const path = join(dir, 'prices.sqlite');
+    const s = openStore(path);
+    const first = sweep(s, [listing(1), listing(2)]);
+    const second = sweep(s, [listing(1), listing(2, { total: 110000, ppm: 1833 })]);
+    s.close();
+    const rows = new DatabaseSync(path).prepare('SELECT id, sweep_id, total, ppm FROM price_history ORDER BY id, sweep_id').all();
+    expect(rows.map((r) => ({ ...r }))).toEqual([
+      { id: 'storia:1', sweep_id: first, total: 120000, ppm: 2000 },
+      { id: 'storia:2', sweep_id: first, total: 120000, ppm: 2000 },
+      { id: 'storia:2', sweep_id: second, total: 110000, ppm: 1833 },
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('listingCount counts the sweep in progress and the last complete one', () => {
+  const first = sweep(store, [listing(1), listing(2), listing(3)]);
+  const second = store.startSweep();
+  store.saveSearchListings(second, [listing(1)]);
+  store.saveSearchListings(second, [listing(1)]);
+
+  expect(store.listingCount(first)).toBe(3);
+  expect(store.listingCount(second)).toBe(1);
 });
 
 test('current() excludes a listing missing from the last complete sweep', () => {
@@ -168,6 +212,16 @@ test('a listing marked gone is excluded from current()', () => {
   expect(store.current().map((r) => r.id)).toEqual(['storia:1']);
 });
 
+test('a listing marked gone that is back in the search results is checked again', () => {
+  sweep(store, [listing(1), listing(2)]);
+  store.saveDetail('storia:1', detail);
+  store.saveDetail('storia:2', null);
+  sweep(store, [listing(1), listing(2)]);
+
+  expect(store.needingDetail(10).map((l) => l.id)).toEqual(['storia:2']);
+  expect(store.current().map((r) => [r.id, r.hasDetail]).sort()).toEqual([['storia:1', true], ['storia:2', false]]);
+});
+
 test('opening a file store creates its directory', () => {
   const dir = mkdtempSync(join(tmpdir(), 'store-test-'));
   try {
@@ -211,12 +265,16 @@ test('a database created with the old schema opens, keeps its rows and stores a 
 
     const migrated = openStore(path);
     expect(migrated.current().map((r) => r.id)).toEqual(['storia:7']);
-    sweep(migrated, [listing(8, { year: 1977 })]);
-    expect(migrated.current().map((r) => [r.id, r.year])).toEqual([['storia:8', 1977]]);
+    // storia:7 predates the price history; its old price must still count as its peak after a cut.
+    sweep(migrated, [listing(7, { total: 90000, radiusM: 100 }), listing(8, { year: 1977 })]);
+    expect(migrated.current().map((r) => [r.id, r.year, r.total, r.peakTotal, r.radiusM ?? null])).toEqual([
+      ['storia:7', undefined, 90000, 100000, 100],
+      ['storia:8', 1977, 120000, 120000, null],
+    ]);
     migrated.close();
 
     const again = openStore(path);
-    expect(again.current().map((r) => [r.id, r.year])).toEqual([['storia:8', 1977]]);
+    expect(again.current().map((r) => [r.id, r.year])).toEqual([['storia:7', undefined], ['storia:8', 1977]]);
     again.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

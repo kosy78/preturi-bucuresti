@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { gridDisk, latLngToCell } from 'h3-js';
 import { H3_RESOLUTION, type MapListing, type Meta } from '../shared/types';
 import { mergeReposts } from './dedupe';
-import { metres, nearestPoint, nearestPolygon, type LngLat, type Named, type NamedPolygon } from './geo';
+import { metres, nearestPoint, nearestPolygon, sectorAt, within, type Boundaries, type LngLat, type Named, type NamedPolygon } from './geo';
 import type { Store, StoredListing } from './store';
 
 const MIN_PPM = 400;
@@ -13,6 +13,15 @@ const SHARED_PIN_COUNT = 4;
 const NEIGHBOUR_M = 600;
 // Resolution 7 cells are ~1.2 km across, so a cell and its ring hold every point within 600 m.
 const NEIGHBOUR_CELL_RESOLUTION = 7;
+// Storia hides some pins behind a circle; past this the pin says little about which cell the flat is in.
+const MAX_CELL_RADIUS_M = 500;
+// In one neighbourhood old blocks sell under its median and new ones over (pre-1977 about 0.9x, 2020 on about 1.2x),
+// so comparing with the whole neighbourhood made old flats look like bargains.
+const NEW_ERA_FROM = 1990;
+const DAY_MS = 86_400_000;
+
+type Era = 'vechi' | 'nou';
+type Median = { median: number; count: number };
 
 const position = (l: StoredListing) => (l.hasDetail && l.lat != null && l.lng != null ? { lat: l.lat, lng: l.lng } : null);
 const pinKey = (p: { lat: number; lng: number }) => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`;
@@ -23,10 +32,16 @@ function median(xs: number[]): number {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-function mediansBy(ls: StoredListing[], key: 'district' | 'sector') {
+const eraOf = (l: StoredListing): Era | null => (l.year == null ? null : l.year < NEW_ERA_FROM ? 'vechi' : 'nou');
+const districtEra = (l: StoredListing) => {
+  const era = eraOf(l);
+  return era && l.district !== null ? `${l.district}|${era}` : null;
+};
+
+function mediansBy(ls: StoredListing[], key: (l: StoredListing) => string | null): Map<string, Median> {
   const groups = new Map<string, number[]>();
   for (const l of ls) {
-    const name = l[key];
+    const name = key(l);
     if (name === null) continue;
     const ppms = groups.get(name);
     if (ppms) ppms.push(l.ppm);
@@ -35,8 +50,28 @@ function mediansBy(ls: StoredListing[], key: 'district' | 'sector') {
   return new Map([...groups].map(([name, ppms]) => [name, { median: median(ppms), count: ppms.length }]));
 }
 
+type Medians = { districtEras: Map<string, Median>; districts: Map<string, Median>; sectors: Map<string, Median> };
+
+// The narrowest comparison with enough listings: same neighbourhood and era, then neighbourhood, then sector.
+function basisFor(l: StoredListing, m: Medians): { kind: 'district' | 'sector'; name: string; era: Era | null; median: number } | null {
+  if (l.fromPrice) return null;
+  const key = districtEra(l);
+  const byEra = key !== null ? m.districtEras.get(key) : undefined;
+  if (byEra && byEra.count >= MIN_DISTRICT_SAMPLE) return { kind: 'district', name: l.district!, era: eraOf(l), median: byEra.median };
+  const district = l.district !== null ? m.districts.get(l.district) : undefined;
+  if (district && district.count >= MIN_DISTRICT_SAMPLE) return { kind: 'district', name: l.district!, era: null, median: district.median };
+  const sector = l.sector !== null ? m.sectors.get(l.sector) : undefined;
+  return sector ? { kind: 'sector', name: l.sector!, era: null, median: sector.median } : null;
+}
+
+function priceDrop(l: StoredListing): number | null {
+  const drop = l.peakTotal != null ? Math.round((1 - l.total / l.peakTotal) * 100) : 0;
+  return drop > 0 ? drop : null;
+}
+
 // Each site names neighbourhoods its own way, which would split the medians; Storia's names win.
-function withStoriaPlaces(ls: StoredListing[]): StoredListing[] {
+// Sectors come from the official outlines instead, so they hold even where no Storia listing is near.
+function withStoriaPlaces(ls: StoredListing[], boundaries: Boundaries): StoredListing[] {
   const cellOf = (p: { lat: number; lng: number }) => latLngToCell(p.lat, p.lng, NEIGHBOUR_CELL_RESOLUTION);
   const storia = new Map<string, { at: LngLat; l: StoredListing }[]>();
   for (const l of ls) {
@@ -49,10 +84,15 @@ function withStoriaPlaces(ls: StoredListing[]): StoredListing[] {
     else storia.set(cell, [entry]);
   }
 
-  return ls.map((l) => {
+  return ls.flatMap((l): StoredListing[] => {
     const p = position(l);
+    if (!p || l.id.startsWith('storia:')) return [l];
+    // The tool covers Bucharest only: an exact pin outside the city is an Ilfov flat and is left out; a rough geocode
+    // outside may just be a mis-read street, so the flat stays, without a position.
+    if (!within(boundaries.city, [p.lng, p.lat])) return l.precise === true ? [] : [{ ...l, lat: null, lng: null, precise: false }];
+    const placed = { ...l, sector: sectorAt([p.lng, p.lat], boundaries) ?? l.sector };
     // A geocoded pin can sit kilometres off; it would borrow the wrong neighbourhood.
-    if (!p || l.precise !== true || l.id.startsWith('storia:')) return l;
+    if (l.precise !== true) return [placed];
     let nearest: StoredListing | null = null;
     let best = NEIGHBOUR_M;
     for (const cell of gridDisk(cellOf(p), 1)) {
@@ -61,7 +101,7 @@ function withStoriaPlaces(ls: StoredListing[]): StoredListing[] {
         if (m <= best) [nearest, best] = [s, m];
       }
     }
-    return nearest ? { ...l, district: nearest.district, sector: nearest.sector } : l;
+    return [nearest ? { ...placed, district: nearest.district } : placed];
   });
 }
 
@@ -69,10 +109,11 @@ export function buildExport(
   ls: StoredListing[],
   stations: Named[],
   parks: NamedPolygon[],
+  boundaries: Boundaries,
   sweepFinishedAt: string,
 ): { listings: MapListing[]; meta: Meta } {
   const sane = ls.filter((l) => l.ppm >= MIN_PPM && l.ppm <= MAX_PPM);
-  const { kept, also } = mergeReposts(withStoriaPlaces(sane));
+  const { kept, also } = mergeReposts(withStoriaPlaces(sane, boundaries));
 
   // Agents often drop the pin on a neighbourhood centre or their usual spot rather than the building.
   const pins = new Map<string, number>();
@@ -82,26 +123,21 @@ export function buildExport(
   }
 
   const stats = kept.filter((l) => !l.fromPrice);
-  const districts = mediansBy(stats, 'district');
-  const sectors = mediansBy(stats, 'sector');
+  const medians: Medians = {
+    districtEras: mediansBy(stats, districtEra),
+    districts: mediansBy(stats, (l) => l.district),
+    sectors: mediansBy(stats, (l) => l.sector),
+  };
 
   const listings = kept.map((l): MapListing => {
     const p = position(l);
     const sharedPin = p !== null && pins.get(pinKey(p))! >= SHARED_PIN_COUNT;
-    const precise = p !== null && l.precise === true && !sharedPin;
+    const wideCircle = l.id.startsWith('storia:') && (l.radiusM ?? 0) > MAX_CELL_RADIUS_M;
+    const precise = p !== null && l.precise === true && !sharedPin && !wideCircle;
     // Storia's approximate pins are right to the neighbourhood, enough for a cell; other sites' are raw geocodes.
-    const inCell = p !== null && !sharedPin && (precise || l.id.startsWith('storia:'));
+    const inCell = p !== null && !sharedPin && !wideCircle && (precise || l.id.startsWith('storia:'));
     const at: LngLat | null = p && [p.lng, p.lat];
-
-    const district = l.district !== null ? districts.get(l.district) : undefined;
-    const sector = l.sector !== null ? sectors.get(l.sector) : undefined;
-    const basis = l.fromPrice
-      ? null
-      : district && district.count >= MIN_DISTRICT_SAMPLE
-        ? { kind: 'district' as const, name: l.district, median: district.median }
-        : sector
-          ? { kind: 'sector' as const, name: l.sector, median: sector.median }
-          : null;
+    const basis = basisFor(l, medians);
 
     return {
       id: l.id,
@@ -122,11 +158,14 @@ export function buildExport(
       sector: l.sector,
       metro: at && stations.length ? nearestPoint(at, stations) : null,
       park: at && parks.length ? nearestPolygon(at, parks) : null,
-      isNewDev: l.isNewDev,
+      isNewDev: l.isNewDev || l.market === 'primary',
       inStats: !l.fromPrice,
       delta: basis ? Math.round((l.ppm / basis.median - 1) * 100) : null,
       deltaBasis: basis?.kind ?? null,
       basisName: basis?.name ?? null,
+      basisEra: basis?.era ?? null,
+      // Left out when there is none, so 16 000 listings do not each carry an empty field.
+      ...(priceDrop(l) !== null ? { priceDrop: priceDrop(l) } : {}),
     };
   });
 
@@ -156,6 +195,7 @@ export function runExport(
   store: Store,
   stations: Named[],
   parks: NamedPolygon[],
+  boundaries: Boundaries,
   outDir: string,
   log: (line: string) => void,
   ...others: (Store | undefined)[]
@@ -167,7 +207,7 @@ export function runExport(
 
   const ls = [store, ...extras].flatMap((s) => s.current());
   const updatedAt = [store, ...extras].map((s) => s.lastCompleteSweep()!.finishedAt).reduce((a, b) => (b < a ? b : a));
-  const { listings, meta } = buildExport(ls, stations, parks, updatedAt);
+  const { listings, meta } = buildExport(ls, stations, parks, boundaries, updatedAt);
   mkdirSync(outDir, { recursive: true });
   writeAtomically(join(outDir, 'listings.json'), listings);
   writeAtomically(join(outDir, 'meta.json'), meta);

@@ -8,12 +8,14 @@ export type Store = {
   saveSearchListings(sweepId: number, ls: SearchListing[]): void;
   finishSweep(sweepId: number, ok: boolean): void;
   lastCompleteSweep(): { id: number; finishedAt: string } | null;
+  listingCount(sweepId: number): number;
   needingDetail(limit: number, prioritySector?: string): { id: string; url: string }[];
   saveDetail(id: string, d: Detail | null): void;
   current(): StoredListing[];
   close(): void;
 };
-export type StoredListing = SearchListing & Partial<Detail> & { firstSeen: string; hasDetail: boolean };
+// peakTotal: the highest total recorded for the post, current one included.
+export type StoredListing = SearchListing & Partial<Detail> & { firstSeen: string; hasDetail: boolean; peakTotal?: number };
 
 type Row = {
   id: string;
@@ -33,6 +35,9 @@ type Row = {
   posted_at: string;
   first_seen: string;
   list_year: number | null;
+  radius_m: number | null;
+  created_first: string | null;
+  peak_total: number | null;
   detail_state: 'saved' | 'gone' | null;
   lat: number | null;
   lng: number | null;
@@ -75,12 +80,24 @@ const schema = `
     year INTEGER,
     market TEXT
   );
+  CREATE TABLE IF NOT EXISTS price_history (
+    id TEXT NOT NULL,
+    sweep_id INTEGER NOT NULL,
+    total REAL NOT NULL,
+    ppm REAL NOT NULL,
+    PRIMARY KEY (id, sweep_id)
+  );
 `;
 
-// The table predates list_year; CREATE TABLE IF NOT EXISTS leaves an existing one unchanged.
+// The table predates these columns; CREATE TABLE IF NOT EXISTS leaves an existing one unchanged.
+// Only additions: an older collector may be writing to the same file and must keep working.
+const ADDED_COLUMNS = { list_year: 'INTEGER', radius_m: 'INTEGER', created_first: 'TEXT' };
+
 function migrate(db: DatabaseSync) {
   const columns = db.prepare('PRAGMA table_info(listings)').all() as { name: string }[];
-  if (!columns.some((c) => c.name === 'list_year')) db.exec('ALTER TABLE listings ADD COLUMN list_year INTEGER');
+  for (const [name, type] of Object.entries(ADDED_COLUMNS)) {
+    if (!columns.some((c) => c.name === name)) db.exec(`ALTER TABLE listings ADD COLUMN ${name} ${type}`);
+  }
 }
 
 const lastComplete = `(SELECT id FROM sweeps WHERE ok = 1 ORDER BY id DESC LIMIT 1)`;
@@ -95,16 +112,22 @@ export function openStore(path: string): Store {
 
   const upsert = db.prepare(`
     INSERT INTO listings (id, url, title, total, ppm, m2, rooms, floor, street, district, sector,
-      private_owner, is_new_dev, from_price, posted_at, first_seen, last_sweep, list_year)
+      private_owner, is_new_dev, from_price, posted_at, first_seen, last_sweep, list_year, radius_m, created_first)
     VALUES (:id, :url, :title, :total, :ppm, :m2, :rooms, :floor, :street, :district, :sector,
-      :private_owner, :is_new_dev, :from_price, :posted_at, :first_seen, :last_sweep, :list_year)
+      :private_owner, :is_new_dev, :from_price, :posted_at, :first_seen, :last_sweep, :list_year, :radius_m, :created_first)
     ON CONFLICT (id) DO UPDATE SET
       url = excluded.url, title = excluded.title, total = excluded.total, ppm = excluded.ppm,
       m2 = excluded.m2, rooms = excluded.rooms, floor = excluded.floor, street = excluded.street,
       district = excluded.district, sector = excluded.sector, private_owner = excluded.private_owner,
       is_new_dev = excluded.is_new_dev, from_price = excluded.from_price, posted_at = excluded.posted_at,
-      last_sweep = excluded.last_sweep, list_year = excluded.list_year
+      last_sweep = excluded.last_sweep, list_year = excluded.list_year, radius_m = excluded.radius_m,
+      created_first = excluded.created_first,
+      -- back in the search results, so worth checking again
+      detail_state = CASE WHEN detail_state = 'gone' THEN NULL ELSE detail_state END
   `);
+  const prior = db.prepare('SELECT total, ppm, last_sweep FROM listings WHERE id = ?');
+  const keepPrice = db.prepare('INSERT OR IGNORE INTO price_history (id, sweep_id, total, ppm) VALUES (?, ?, ?, ?)');
+  const recordPrice = db.prepare('INSERT OR REPLACE INTO price_history (id, sweep_id, total, ppm) VALUES (?, ?, ?, ?)');
 
   return {
     startSweep() {
@@ -117,6 +140,12 @@ export function openStore(path: string): Store {
       db.exec('BEGIN');
       try {
         for (const l of ls) {
+          const before = prior.get(l.id) as { total: number; ppm: number; last_sweep: number } | undefined;
+          if (!before || before.total !== l.total) {
+            // Rows saved before price_history existed have no history yet; keep the old price so the cut shows.
+            if (before) keepPrice.run(l.id, before.last_sweep, before.total, before.ppm);
+            recordPrice.run(l.id, sweepId, l.total, l.ppm);
+          }
           upsert.run({
             id: l.id,
             url: l.url,
@@ -136,6 +165,8 @@ export function openStore(path: string): Store {
             first_seen: now,
             last_sweep: sweepId,
             list_year: l.year ?? null,
+            radius_m: l.radiusM ?? null,
+            created_first: l.createdFirst ?? null,
           });
         }
         db.exec('COMMIT');
@@ -162,6 +193,12 @@ export function openStore(path: string): Store {
         | { id: number; finished_at: string }
         | undefined;
       return row ? { id: row.id, finishedAt: row.finished_at } : null;
+    },
+
+    // Exact for the sweep in progress and the last complete one: a listing the newer sweep rereads keeps its complete_sweep.
+    listingCount(sweepId) {
+      const row = db.prepare('SELECT COUNT(*) AS n FROM listings WHERE last_sweep = ?1 OR complete_sweep = ?1').get(sweepId) as { n: number };
+      return row.n;
     },
 
     needingDetail(limit, prioritySector) {
@@ -191,7 +228,10 @@ export function openStore(path: string): Store {
 
     current() {
       const rows = db
-        .prepare(`SELECT * FROM listings WHERE complete_sweep = ${lastComplete} AND detail_state IS NOT 'gone' ORDER BY posted_at DESC`)
+        .prepare(
+          `SELECT l.*, (SELECT MAX(h.total) FROM price_history h WHERE h.id = l.id) AS peak_total FROM listings l
+           WHERE complete_sweep = ${lastComplete} AND detail_state IS NOT 'gone' ORDER BY posted_at DESC`,
+        )
         .all() as Row[];
       return rows.map(toStored);
     },
@@ -223,6 +263,9 @@ function toStored(r: Row): StoredListing {
     hasDetail: r.detail_state === 'saved',
   };
   if (r.list_year !== null) stored.year = r.list_year;
+  if (r.radius_m !== null) stored.radiusM = r.radius_m;
+  if (r.created_first !== null) stored.createdFirst = r.created_first;
+  if (r.peak_total !== null) stored.peakTotal = r.peak_total;
   if (stored.hasDetail) {
     Object.assign(stored, { lat: r.lat, lng: r.lng, precise: r.precise === 1, year: r.year ?? r.list_year, market: r.market });
   }

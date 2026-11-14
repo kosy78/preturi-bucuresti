@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { getResolution } from 'h3-js';
 import { afterEach, beforeEach, expect, test } from 'vitest';
 import { buildExport, runExport } from './export';
-import type { Named, NamedPolygon } from './geo';
+import type { Boundaries, LngLat, Named, NamedPolygon } from './geo';
 import { openStore, type Store, type StoredListing } from './store';
 
 const stations: Named[] = [{ name: 'Piața Unirii', at: [26.1025, 44.4268] }];
@@ -21,6 +21,15 @@ const parks: NamedPolygon[] = [
   },
 ];
 const FINISHED = '2026-11-14T06:00:00.000Z';
+const box = (w: number, s: number, e: number, n: number): LngLat[] => [[w, s], [e, s], [e, n], [w, n], [w, s]];
+// Every test position sits in the city; latitude 44.43 splits Sectorul 3 (south) from Sectorul 2 (north).
+const boundaries: Boundaries = {
+  city: [[box(25.9, 44.3, 26.4, 44.6)]],
+  sectors: [
+    { name: 'Sectorul 3', area: [[box(25.9, 44.3, 26.4, 44.43)]] },
+    { name: 'Sectorul 2', area: [[box(25.9, 44.43, 26.4, 44.6)]] },
+  ],
+};
 
 // Each listing gets its own street, size and spot so none of them count as reposts of each other.
 function stored(n: number, overrides: Partial<StoredListing> = {}): StoredListing {
@@ -54,7 +63,7 @@ function stored(n: number, overrides: Partial<StoredListing> = {}): StoredListin
 const many = (from: number, count: number, overrides: Partial<StoredListing> = {}) =>
   Array.from({ length: count }, (_, i) => stored(from + i, overrides));
 
-const build = (ls: StoredListing[]) => buildExport(ls, stations, parks, FINISHED);
+const build = (ls: StoredListing[]) => buildExport(ls, stations, parks, boundaries, FINISHED);
 const byId = (r: ReturnType<typeof build>, id: string) => r.listings.find((l) => l.id === id)!;
 
 test('two reposts come out as one listing whose also holds the other URL', () => {
@@ -161,7 +170,8 @@ test('an approximate Anuntul pin gets no cell; a precise one does', () => {
 });
 
 test('a Storia and an Anuntul post of the same flat merge into one listing with the other URL in also', () => {
-  const s = stored(1, { firstSeen: '2026-11-01T08:00:00.000Z' });
+  // Storia's sector name, as the outline gives the Anuntul post.
+  const s = stored(1, { firstSeen: '2026-11-01T08:00:00.000Z', sector: 'Sectorul 3' });
   const a = anuntul(2, { m2: s.m2, total: s.total + 500, lat: s.lat! + 0.0001, lng: s.lng, firstSeen: '2026-11-03T08:00:00.000Z' });
   const r = build([a, s]);
   expect(r.listings.map((l) => l.id)).toEqual(['storia:1']);
@@ -169,15 +179,31 @@ test('a Storia and an Anuntul post of the same flat merge into one listing with 
   expect(r.meta.merged).toBe(1);
 });
 
-test('an Anuntul listing 200 m from a Storia listing takes its district and sector; one 2 km away keeps its own', () => {
+test('an Anuntul listing 200 m from a Storia listing takes its district; one 2 km away keeps its own', () => {
   const s = stored(1, { lat: 44.42, lng: 26.12, district: 'Titan', sector: 'Sectorul 3' });
   const near = anuntul(2, { lat: 44.4218, lng: 26.12 });
-  const far = anuntul(3, { lat: 44.438, lng: 26.12, district: 'Iancului', sector: 'Sectorul 2' });
+  const far = anuntul(3, { lat: 44.438, lng: 26.12, district: 'Iancului' });
   const unplaced = anuntul(4, { hasDetail: false, lat: undefined, lng: undefined, precise: undefined });
   const r = build([s, near, far, unplaced]);
   expect(byId(r, 'anuntul:2')).toMatchObject({ district: 'Titan', sector: 'Sectorul 3' });
   expect(byId(r, 'anuntul:3')).toMatchObject({ district: 'Iancului', sector: 'Sectorul 2' });
   expect(byId(r, 'anuntul:4')).toMatchObject({ district: null, sector: null });
+});
+
+test('an Anuntul sector comes from the sector outlines, not from the nearest Storia listing', () => {
+  // Across the border from its Storia neighbour, which Storia files under Sectorul 3.
+  const s = stored(1, { lat: 44.4295, lng: 26.12, district: 'Titan', sector: 'Sectorul 3' });
+  const r = build([s, anuntul(2, { lat: 44.4305, lng: 26.12 }), anuntul(3, { lat: 44.45, lng: 26.12, precise: false })]);
+  expect(byId(r, 'anuntul:2')).toMatchObject({ district: 'Titan', sector: 'Sectorul 2' });
+  // An approximate pin is close enough for the sector, not for the neighbourhood.
+  expect(byId(r, 'anuntul:3')).toMatchObject({ district: null, sector: 'Sectorul 2' });
+});
+
+test('an exact Anuntul pin outside the city is left out, a rough one loses its position, a Storia pin keeps its own', () => {
+  const r = build([anuntul(1, { lat: 44.42, lng: 26.5, precise: true }), anuntul(3, { lat: 44.42, lng: 26.5, precise: false }), stored(2, { lat: 44.42, lng: 26.5 })]);
+  expect(r.listings.some((l) => l.id === 'anuntul:1')).toBe(false);
+  expect(byId(r, 'anuntul:3')).toMatchObject({ lat: null, lng: null, precise: false, cell: null, sector: null, metro: null });
+  expect(byId(r, 'storia:2')).toMatchObject({ lat: 44.42, sector: 'Sector 3' });
 });
 
 test('the nearest Storia listing with a district wins', () => {
@@ -190,14 +216,53 @@ test('the nearest Storia listing with a district wins', () => {
   expect(byId(r, 'anuntul:4')).toMatchObject({ district: 'Titan', sector: 'Sectorul 3' });
 });
 
-test('an imprecise Anuntul pin 200 m from a Storia listing keeps no district and leaves the median alone', () => {
+test('an imprecise Anuntul pin 200 m from a Storia listing keeps no district and leaves the district median alone', () => {
   // Titan's median is 2080; counting the 9000 would lift it to 2085 and turn storia:1's -3 into -4.
   const titan = Array.from({ length: 15 }, (_, i) =>
     stored(i + 1, { lat: 44.42, lng: 26.12 + i * 0.0001, district: 'Titan', sector: 'Sectorul 3', ppm: 2010 + i * 10 }),
   );
   const r = build([...titan, anuntul(60, { lat: 44.4218, lng: 26.12, precise: false, ppm: 9000 })]);
-  expect(byId(r, 'anuntul:60')).toMatchObject({ district: null, sector: null, delta: null, basisName: null });
+  expect(byId(r, 'anuntul:60')).toMatchObject({ district: null, sector: 'Sectorul 3', deltaBasis: 'sector' });
   expect(byId(r, 'storia:1').delta).toBe(-3);
+});
+
+test('a listing compares with its district and era when that group has 15 listings, else with the whole district', () => {
+  const old = many(1, 15, { district: 'Titan', year: 1975, ppm: 2000 });
+  const fresh = many(101, 15, { district: 'Titan', year: 2021, ppm: 3000 });
+  const r = build([...old, ...fresh, stored(200, { district: 'Titan', year: 1989, ppm: 1800 }), stored(201, { district: 'Titan', year: 1990, ppm: 3300 })]);
+  expect(byId(r, 'storia:200')).toMatchObject({ deltaBasis: 'district', basisName: 'Titan', basisEra: 'vechi', delta: -10 });
+  expect(byId(r, 'storia:201')).toMatchObject({ deltaBasis: 'district', basisName: 'Titan', basisEra: 'nou', delta: 10 });
+});
+
+test('an era group under 15 or an unknown year falls back to the whole district, then the sector', () => {
+  const r = build([
+    ...many(1, 15, { district: 'Titan', year: 1975 }),
+    ...many(101, 14, { district: 'Titan', year: 2021 }),
+    stored(200, { district: 'Titan', year: null }),
+    ...many(301, 14, { district: 'Dristor', year: 1970 }),
+  ]);
+  expect(byId(r, 'storia:1')).toMatchObject({ deltaBasis: 'district', basisEra: 'vechi' });
+  expect(byId(r, 'storia:101')).toMatchObject({ deltaBasis: 'district', basisName: 'Titan', basisEra: null });
+  expect(byId(r, 'storia:200')).toMatchObject({ deltaBasis: 'district', basisName: 'Titan', basisEra: null });
+  expect(byId(r, 'storia:301')).toMatchObject({ deltaBasis: 'sector', basisName: 'Sector 3', basisEra: null });
+});
+
+test('a primary-market listing counts as a new development', () => {
+  const r = build([stored(1, { market: 'primary' }), stored(2), stored(3, { isNewDev: true })]);
+  expect([1, 2, 3].map((n) => byId(r, `storia:${n}`).isNewDev)).toEqual([true, false, true]);
+});
+
+test('a Storia pin with a privacy circle over 500 m gets no cell and is not precise; 500 m still gets a cell', () => {
+  const r = build([stored(1, { radiusM: 1000 }), stored(2, { radiusM: 500, precise: false }), anuntul(3, { radiusM: 1000 })]);
+  expect(byId(r, 'storia:1')).toMatchObject({ precise: false, cell: null });
+  expect(byId(r, 'storia:1').lat).not.toBeNull();
+  expect(getResolution(byId(r, 'storia:2').cell!)).toBe(8);
+  expect(byId(r, 'anuntul:3').precise).toBe(true);
+});
+
+test('priceDrop is the % under the highest recorded price, and left out when the price never fell', () => {
+  const r = build([stored(1, { total: 90000, peakTotal: 100000 }), stored(2, { peakTotal: 102000 }), stored(3, { total: 99800, peakTotal: 100000 }), stored(4)]);
+  expect([1, 2, 3, 4].map((n) => byId(r, `storia:${n}`).priceDrop)).toEqual([10, undefined, undefined, undefined]);
 });
 
 let store: Store;
@@ -216,7 +281,7 @@ afterEach(() => {
 });
 
 test('export with no complete sweep throws and writes nothing', () => {
-  expect(() => runExport(store, stations, parks, dir, (l) => lines.push(l))).toThrow('Nu există nicio colectare completă');
+  expect(() => runExport(store, stations, parks, boundaries, dir, (l) => lines.push(l))).toThrow('Nu există nicio colectare completă');
   expect(readdirSync(dir)).toEqual([]);
 });
 
@@ -226,7 +291,7 @@ test('export writes listings.json and meta.json and logs a summary', () => {
   store.saveSearchListings(id, [search, { ...search, id: 'storia:2', url: 'u2', ppm: 50 }]);
   store.finishSweep(id, true);
 
-  runExport(store, stations, parks, dir, (l) => lines.push(l));
+  runExport(store, stations, parks, boundaries, dir, (l) => lines.push(l));
 
   expect(readdirSync(dir).sort()).toEqual(['listings.json', 'meta.json']);
   const listings = JSON.parse(readFileSync(join(dir, 'listings.json'), 'utf8'));
@@ -248,7 +313,7 @@ test('export reads both stores and dates the data by the older sweep', () => {
     sweepInto(other, [anuntul(2)]);
     sweepInto(store, [stored(1)]);
 
-    runExport(store, stations, parks, dir, (l) => lines.push(l), other);
+    runExport(store, stations, parks, boundaries, dir, (l) => lines.push(l), other);
 
     const listings = JSON.parse(readFileSync(join(dir, 'listings.json'), 'utf8'));
     const meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8'));
@@ -266,7 +331,7 @@ test('export ignores a second store without a complete sweep', () => {
     other.saveSearchListings(id, [{ ...stored(2), id: 'anuntul:2' }]);
     sweepInto(store, [stored(1)]);
 
-    runExport(store, stations, parks, dir, (l) => lines.push(l), other);
+    runExport(store, stations, parks, boundaries, dir, (l) => lines.push(l), other);
 
     const listings = JSON.parse(readFileSync(join(dir, 'listings.json'), 'utf8'));
     const meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8'));
@@ -285,7 +350,7 @@ test('export reads a third store too', () => {
     sweepInto(third, [{ ...anuntul(3), id: 'imobiliare:3' }]);
     sweepInto(store, [stored(1)]);
 
-    runExport(store, stations, parks, dir, (l) => lines.push(l), second, third);
+    runExport(store, stations, parks, boundaries, dir, (l) => lines.push(l), second, third);
 
     const listings = JSON.parse(readFileSync(join(dir, 'listings.json'), 'utf8'));
     expect(listings.map((l: { id: string }) => l.id).sort()).toEqual(['anuntul:2', 'imobiliare:3', 'storia:1']);
