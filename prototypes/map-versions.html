@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Map versions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font-family: "Instrument Sans", system-ui, sans-serif; font-size: 15px; line-height: 1.45; -webkit-font-smoothing: antialiased; }
+  #stage { height: 100vh; min-height: 600px; }
+  .display { font-family: "Bricolage Grotesque", sans-serif; letter-spacing: -0.02em; }
+  .num { font-variant-numeric: tabular-nums; }
+  svg.map { width: 100%; height: 100%; display: block; }
+  .cell { transition: opacity .2s ease-out; }
+  @media (prefers-reduced-motion: reduce) { .cell { transition: none; } }
+  .place { font-size: 11.5px; font-weight: 500; paint-order: stroke; stroke-width: 3px; pointer-events: none; }
+  .tip { position: absolute; pointer-events: none; border-radius: 6px; padding: 8px 10px; font-size: 12.5px; line-height: 1.4; display: none; white-space: nowrap; z-index: 5; }
+  .tip strong { font-size: 15px; font-variant-numeric: tabular-nums; }
+  .tip span { opacity: .72; }
+  input[type=range] { width: 100%; margin: 0; }
+  button, input, a { font: inherit; }
+
+  /* Version 1: Atlas */
+  .atlas { --ink:#1c2b36; --soft:#5b6b76; --line:#dde3e6; display: grid; grid-template-columns: 320px 1fr; height: 100%; color: var(--ink); background: #d9e0e3; }
+  .atlas aside { background: #fff; padding: 28px 24px 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 26px; }
+  .atlas h1 { font-weight: 700; font-size: 30px; line-height: 1.05; margin: 0 0 6px; }
+  .atlas .sub { color: var(--soft); margin: 0; font-size: 14px; }
+  .atlas h2 { font-size: 13px; font-weight: 600; margin: 0 0 12px; color: var(--soft); }
+  .atlas .field { margin-bottom: 16px; }
+  .atlas .field label { display: flex; justify-content: space-between; font-weight: 500; margin-bottom: 4px; }
+  .atlas .field output { color: var(--soft); font-weight: 400; }
+  .atlas input { accent-color: var(--ink); }
+  .atlas .check { display: flex; gap: 8px; align-items: center; font-weight: 500; margin-bottom: 10px; cursor: pointer; }
+  .atlas .check input { width: 16px; height: 16px; margin: 0; }
+  .atlas .note { margin-top: auto; font-size: 12.5px; color: var(--soft); border-top: 1px solid var(--line); padding-top: 12px; }
+  .atlas main { position: relative; overflow: hidden; }
+  .atlas .cell { stroke: #e6ebed; stroke-width: 1; }
+  .atlas .cell:hover { stroke: var(--ink); stroke-width: 1.5; }
+  .atlas .place { fill: var(--ink); stroke: rgba(255,255,255,.75); }
+  .atlas .float { position: absolute; background: #fff; border-radius: 8px; box-shadow: 0 1px 2px rgba(28,43,54,.12), 0 8px 24px rgba(28,43,54,.10); }
+  .atlas .legend { left: 20px; bottom: 20px; padding: 12px 14px; width: 250px; }
+  .atlas .legend b { font-weight: 600; font-size: 13px; }
+  .atlas .count { right: 20px; top: 20px; padding: 10px 14px; font-size: 13px; color: var(--soft); }
+  .atlas .count strong { font-size: 22px; color: var(--ink); display: block; line-height: 1.1; }
+  .ramp { height: 10px; border-radius: 3px; margin: 8px 0 4px; position: relative; }
+  .ticks { display: flex; justify-content: space-between; font-size: 12px; opacity: .7; }
+  .atlas .tip { background: var(--ink); color: #fff; }
+
+  /* Version 2: Night */
+  .night { --ink:#eaf0f6; --soft:#93a4b6; position: relative; height: 100%; background: #0c1826; color: var(--ink); overflow: hidden; }
+  .night .place { fill: #c9d6e3; stroke: rgba(12,24,38,.8); }
+  .night .hit { fill: transparent; }
+  .night .hit:hover { stroke: #fff; stroke-width: 1.2; }
+  .night .glass { position: absolute; background: rgba(16,30,46,.86); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,.09); border-radius: 10px; }
+  .night .bar { top: 20px; left: 20px; right: 20px; max-width: 1010px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 26px; padding: 12px 18px; }
+  .night .bar .title { font-weight: 700; font-size: 19px; margin-right: 6px; }
+  .night .ctl { display: grid; gap: 2px; width: 170px; font-size: 13px; }
+  .night .ctl label { display: flex; justify-content: space-between; color: var(--soft); }
+  .night .ctl output { color: var(--ink); font-weight: 500; }
+  .night input { accent-color: #f2d27a; }
+  .night .check { display: flex; gap: 7px; align-items: center; font-size: 13.5px; cursor: pointer; }
+  .night .check input { width: 15px; height: 15px; margin: 0; }
+  .night .legend { left: 20px; bottom: 20px; padding: 14px 16px; width: 290px; }
+  .night .legend .big { font-weight: 700; font-size: 28px; line-height: 1; }
+  .night .legend .where { color: var(--soft); font-size: 13px; min-height: 38px; margin-top: 4px; }
+  .night .mark { position: absolute; top: -4px; width: 2px; height: 18px; background: #fff; border-radius: 1px; display: none; }
+  .night .sample { position: absolute; right: 20px; bottom: 20px; color: var(--soft); font-size: 12.5px; max-width: 220px; text-align: right; }
+
+  /* Version 3: Listings */
+  .lists { --ink:#20242c; --soft:#666d7a; --line:#e4e6eb; display: grid; grid-template-columns: 440px 1fr; height: 100%; color: var(--ink); background: #eef0f3; }
+  .lists .side { background: #fff; display: flex; flex-direction: column; min-height: 0; }
+  .lists header { padding: 22px 22px 14px; border-bottom: 1px solid var(--line); }
+  .lists h1 { font-weight: 700; font-size: 24px; line-height: 1.1; margin: 0 0 2px; }
+  .lists .sub { color: var(--soft); font-size: 13.5px; margin: 0 0 14px; }
+  .lists .filters { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 18px; font-size: 13px; }
+  .lists .filters label { display: flex; justify-content: space-between; color: var(--soft); }
+  .lists .filters output { color: var(--ink); font-weight: 500; }
+  .lists input { accent-color: var(--ink); }
+  .lists .filters .check { grid-column: 1 / -1; display: flex; gap: 7px; align-items: center; cursor: pointer; color: var(--ink); justify-content: flex-start; }
+  .lists .check input { width: 15px; height: 15px; margin: 0; }
+  .lists ol { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+  .lists li { padding: 16px 22px; border-bottom: 1px solid var(--line); cursor: default; }
+  .lists li.hot { background: #f3f5f9; box-shadow: inset 3px 0 0 var(--ink); }
+  .lists .row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .lists .price { font-weight: 700; font-size: 21px; }
+  .lists .ppm { color: var(--soft); font-size: 13.5px; }
+  .lists .what { font-weight: 500; margin: 2px 0; }
+  .lists .meta { color: var(--soft); font-size: 13px; }
+  .lists .delta { font-size: 13px; font-weight: 600; }
+  .lists .under { color: #1b7a50; } .lists .over { color: #b0413a; } .lists .near { color: var(--soft); }
+  .lists a { color: var(--ink); font-size: 13px; text-underline-offset: 3px; }
+  .lists .empty { padding: 40px 22px; color: var(--soft); }
+  .lists .empty b { display: block; color: var(--ink); font-size: 16px; margin-bottom: 4px; }
+  .lists .foot { padding: 10px 22px; font-size: 12.5px; color: var(--soft); border-top: 1px solid var(--line); }
+  .lists main { position: relative; overflow: hidden; }
+  .lists .place { fill: #2a2f3a; stroke: rgba(255,255,255,.7); }
+  .lists .pin { cursor: pointer; }
+  .lists .pin text { fill: #fff; font-size: 11px; font-weight: 600; text-anchor: middle; pointer-events: none; }
+  .lists .pin.hot rect { stroke: #000; stroke-width: 2; }
+  .lists .legend { position: absolute; left: 20px; top: 20px; background: #fff; border-radius: 8px; padding: 10px 14px; font-size: 12.5px; box-shadow: 0 1px 2px rgba(32,36,44,.12), 0 6px 18px rgba(32,36,44,.08); display: grid; gap: 4px; }
+  .lists .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
+
+  /* Version 4: Blend (Atlas map, Listings panel) builds on .lists */
+  .blend { background: #d9e0e3; }
+  .blend .cell { stroke: #e6ebed; stroke-width: 1; cursor: pointer; }
+  .blend .cell:hover { stroke: var(--ink); stroke-width: 1.5; }
+  .blend .pin rect { fill: #fff; stroke-width: 2; }
+  .blend .pin text { fill: var(--ink); }
+  .blend .pin.hot rect { fill: var(--ink); stroke: var(--ink); }
+  .blend .pin.hot text { fill: #fff; }
+  .blend .tip { background: var(--ink); color: #fff; }
+  .blend .plegend { position: absolute; left: 20px; bottom: 20px; background: #fff; border-radius: 8px; padding: 12px 14px; width: 250px; box-shadow: 0 1px 2px rgba(28,43,54,.12), 0 8px 24px rgba(28,43,54,.10); }
+  .blend .plegend b { font-weight: 600; font-size: 13px; }
+  .blend .areabar { display: none; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 22px; background: #f3f5f9; border-bottom: 1px solid var(--line); font-size: 13.5px; font-weight: 500; }
+  .blend .areabar button { border: 1px solid var(--ink); background: #fff; color: var(--ink); border-radius: 6px; padding: 4px 10px; font-size: 13px; cursor: pointer; }
+  .blend .areabar button:active { transform: scale(0.97); }
+  .blend .areabar button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+  @media (max-width: 860px) {
+    #stage { height: auto; }
+    .atlas, .lists { grid-template-columns: 1fr; height: auto; }
+    .atlas main, .lists main { height: 70vh; }
+    .lists ol { max-height: 60vh; }
+    .night { height: 100vh; }
+  }
+
+  /* Picker: harness chrome, copied from the prototype spec */
+  .proto-picker { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 2147483647; display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 999px; background: rgba(10, 10, 10, 0.82); -webkit-backdrop-filter: blur(12px) saturate(1.4); backdrop-filter: blur(12px) saturate(1.4); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 8px 24px rgba(0, 0, 0, 0.24), 0 2px 6px rgba(0, 0, 0, 0.12); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; line-height: 1; -webkit-font-smoothing: antialiased; user-select: none; -webkit-user-select: none; }
+  .proto-picker-highlight { position: absolute; top: 4px; left: 0; height: 28px; border-radius: 999px; background: rgba(255, 255, 255, 0.12); }
+  .proto-picker[data-ready] .proto-picker-highlight { transition: transform 250ms cubic-bezier(0.23, 1, 0.32, 1), width 250ms cubic-bezier(0.23, 1, 0.32, 1); }
+  @media (prefers-reduced-motion: reduce) { .proto-picker[data-ready] .proto-picker-highlight { transition: none; } }
+  .proto-picker-item { position: relative; display: flex; align-items: center; height: 28px; padding: 0 12px; border: 0; border-radius: 999px; background: transparent; color: rgba(255, 255, 255, 0.55); font: inherit; cursor: pointer; transition: color 150ms ease-out, transform 160ms cubic-bezier(0.23, 1, 0.32, 1); }
+  @media (hover: hover) and (pointer: fine) { .proto-picker-item:hover { color: rgba(255, 255, 255, 0.85); } }
+  .proto-picker-item:active { transform: scale(0.97); }
+  .proto-picker-item:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.4); outline-offset: 2px; }
+  .proto-picker-item[data-active] { color: #fff; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<nav class="proto-picker" aria-label="Prototype variants">
+  <span class="proto-picker-highlight" aria-hidden="true"></span>
+  <button class="proto-picker-item" data-active aria-current="true">Atlas</button>
+  <button class="proto-picker-item">Night</button>
+  <button class="proto-picker-item">Listings</button>
+  <button class="proto-picker-item">Blend</button>
+</nav>
+
+<script>
+/* ---------- Shared sample data (approximate, not real prices) ---------- */
+const NS = 'http://www.w3.org/2000/svg';
+const el = (n, a = {}, p) => { const e = document.createElementNS(NS, n); for (const k in a) e.setAttribute(k, a[k]); if (p) p.appendChild(e); return e; };
+const fmt = n => Math.round(n).toLocaleString('en-US').replace(/,/g, ' ');
+const eur = n => fmt(n) + ' €/m²';
+const PX_PER_MIN = 4.4;
+
+const stations = {
+  Pipera:[640,110], 'Aurel Vlaicu':[590,170], Aviatorilor:[510,215], Victoriei:[480,280], 'Piața Romană':[495,320],
+  Universitate:[500,355], Unirii:[500,392], Tineretului:[520,450], 'Eroii Revoluției':[510,500], 'Piața Sudului':[560,570], Berceni:[600,650],
+  'Gara de Nord':[420,290], 'Crângași':[340,300], 'Grozăvești':[370,350], Eroilor:[420,375], Izvor:[460,388],
+  'Timpuri Noi':[560,420], 'Mihai Bravu':[600,442], Dristor:[640,430], Muncii:[640,370], Iancului:[620,330], Obor:[590,290], 'Ștefan cel Mare':[540,270],
+  Preciziei:[150,400], 'Păcii':[210,395], Lujerului:[290,385], Politehnica:[340,380], Titan:[720,430], 'Anghel Saligny':[860,470],
+  'Drumul Taberei':[255,452], 'Râul Doamnei':[195,472], '1 Mai':[410,210], 'Străulești':[360,100]
+};
+const lines = [
+  ['#2f6fb5', ['Pipera','Aurel Vlaicu','Aviatorilor','Victoriei','Piața Romană','Universitate','Unirii','Tineretului','Eroii Revoluției','Piața Sudului','Berceni']],
+  ['#d9a400', ['Victoriei','Gara de Nord','Crângași','Grozăvești','Eroilor','Izvor','Unirii','Timpuri Noi','Mihai Bravu','Dristor','Muncii','Iancului','Obor','Ștefan cel Mare','Victoriei']],
+  ['#c8453b', ['Preciziei','Păcii','Lujerului','Politehnica','Eroilor','Izvor','Unirii','Timpuri Noi','Mihai Bravu','Dristor','Titan','Anghel Saligny']],
+  ['#2e8b57', ['Gara de Nord','1 Mai','Străulești']],
+  ['#e07b2e', ['Eroilor','Drumul Taberei','Râul Doamnei']]
+];
+const parks = [
+  [500,172,70,34,'Herăstrău'], [468,350,16,12,'Cișmigiu'], [548,482,30,22,'Tineretului'], [490,452,16,13,'Carol'],
+  [700,405,30,22,'Titan (IOR)'], [250,430,22,13,'Drumul Taberei'], [385,345,20,13,'Grădina Botanică'], [600,218,30,14,'Floreasca'],
+  [640,255,22,12,'Plumbuita'], [770,300,30,18,'Pantelimon']
+];
+const places = [
+  ['Băneasa',480,92],['Pipera',668,96],['Floreasca',585,196],['Dorobanți',525,252],['Bucureștii Noi',355,150],['Colentina',690,235],
+  ['Militari',205,362],['Cotroceni',400,402],['Centru',520,345],['Vitan',620,478],['Titan',745,452],['Pantelimon',790,340],
+  ['Drumul Taberei',270,480],['Rahova',370,540],['Ferentari',420,610],['Berceni',575,620]
+];
+const roads = [ // points, then congestion at 8:30 and 13:00 (0 free, 1 slow, 2 jammed)
+  [[[480,60],[500,140],[505,215],[480,280]],2,1], [[[480,280],[495,320],[500,392]],2,2], [[[500,392],[515,470],[540,560],[590,680]],1,0],
+  [[[120,385],[290,378],[420,372],[500,392]],2,1], [[[500,392],[600,410],[720,425],[880,460]],1,0],
+  [[[480,280],[540,268],[590,288],[625,330],[642,400],[640,432]],2,1], [[[420,290],[340,298],[260,320],[160,330]],1,0],
+  [[[500,392],[430,470],[380,540],[330,640]],1,1], [[[590,288],[660,240],[760,180]],1,0], [[[640,110],[590,170],[540,268]],2,1]
+];
+const TRAFFIC = ['#3f9d62', '#e3a52c', '#cc3f3f'];
+
+const C = [500, 385];
+const cityR = a => 1 + 0.06 * Math.sin(3 * a + 1) + 0.04 * Math.sin(5 * a);
+const inCity = (x, y, k = 1) => { const dx = (x - C[0]) / 400, dy = (y - C[1]) / 320; return Math.hypot(dx, dy) < k * cityR(Math.atan2(dy, dx)); };
+const cityPath = (() => { let d = ''; for (let i = 0; i <= 120; i++) { const a = i / 120 * Math.PI * 2, r = cityR(a) * 1.03; d += (i ? 'L' : 'M') + (C[0] + Math.cos(a) * 400 * r).toFixed(1) + ' ' + (C[1] + Math.sin(a) * 320 * r).toFixed(1); } return d + 'Z'; })();
+
+const bumps = [[510,190,2500,105],[560,250,1000,85],[500,355,900,115],[400,385,700,55],[650,110,600,70],[415,605,-450,85],[790,330,-200,90]];
+const noise = (x, y) => { const s = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453; return s - Math.floor(s); };
+const priceAt = (x, y) => { let p = 1450; for (const [bx, by, amp, s] of bumps) p += amp * Math.exp(-((x - bx) ** 2 + (y - by) ** 2) / (2 * s * s)); return Math.round((p + (noise(x, y) - 0.5) * 380) / 10) * 10; };
+const nearest = (x, y, pts) => { let m = 1e9, n = ''; for (const [name, px, py, shrink = 0] of pts) { const dd = Math.hypot(x - px, y - py) - shrink; if (dd < m) { m = dd; n = name; } } return [Math.max(0, m), n]; };
+const stationPts = Object.entries(stations).map(([n, [x, y]]) => [n, x, y]);
+const parkPts = parks.map(([x, y, rx, ry, n]) => [n, x, y, (rx + ry) / 2]);
+const placePts = places.map(([n, x, y]) => [n, x, y]);
+const locate = (x, y) => { const [m, metro] = nearest(x, y, stationPts), [p, park] = nearest(x, y, parkPts); return { metroMin: Math.round(m / PX_PER_MIN), metro, parkMin: Math.round(p / PX_PER_MIN), park, area: nearest(x, y, placePts)[1] }; };
+
+const R = 12, HEXW = Math.sqrt(3) * R;
+const hexPath = (cx, cy, r = R) => { let s = ''; for (let i = 0; i < 6; i++) { const a = Math.PI / 180 * (60 * i - 30); s += (i ? 'L' : 'M') + (cx + r * Math.cos(a)).toFixed(1) + ' ' + (cy + r * Math.sin(a)).toFixed(1); } return s + 'Z'; };
+const cells = [];
+for (let row = 0, y = 40; y < 740; row++, y += R * 1.5)
+  for (let x = 60 + (row % 2 ? HEXW / 2 : 0); x < 940; x += HEXW)
+    if (inCity(x, y)) cells.push({ x, y, price: priceAt(x, y), listings: 2 + Math.floor(noise(y, x) * 22), ...locate(x, y) });
+
+const median = {};
+for (const [name] of places) { const v = cells.filter(c => c.area === name).map(c => c.price).sort((a, b) => a - b); median[name] = v[Math.floor(v.length / 2)]; }
+
+const listings = (() => {
+  let s = 11; const r = () => (s = s * 16807 % 2147483647) / 2147483647;
+  const sources = [['Storia', 'https://www.storia.ro'], ['OLX', 'https://www.olx.ro'], ['Imobiliare.ro', 'https://www.imobiliare.ro']], out = [];
+  while (out.length < 48) {
+    const x = 110 + r() * 780, y = 70 + r() * 640; if (!inCity(x, y, 0.9)) continue;
+    const m2 = Math.round(36 + r() * 78), rooms = m2 < 45 ? 1 : m2 < 62 ? 2 : m2 < 88 ? 3 : 4;
+    const ppm = Math.round(priceAt(x, y) * (0.8 + r() * 0.42) / 10) * 10, loc = locate(x, y);
+    out.push({ id: out.length, x, y, m2, rooms, ppm, total: Math.round(ppm * m2 / 500) * 500, floor: 1 + Math.floor(r() * 9), year: 1962 + Math.floor(r() * 62),
+      src: sources[out.length % 3], delta: Math.round((ppm / median[loc.area] - 1) * 100), ...loc });
+  }
+  return out;
+})();
+
+const mix = (stops, t) => { t = Math.min(1, Math.max(0, t)); const f = t * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(f)), k = f - i; return `rgb(${stops[i].map((v, j) => Math.round(v + (stops[i + 1][j] - v) * k)).join(',')})`; };
+const gradient = stops => `linear-gradient(90deg, ${stops.map(s => `rgb(${s.join(',')})`).join(',')})`;
+const priceT = p => (p - 1200) / 3300;
+
+/* Draws the shared base map into an svg and returns its layer groups. */
+function drawBase(svg, t) {
+  svg.setAttribute('viewBox', '60 40 880 700');
+  el('rect', { x: -400, y: -400, width: 1800, height: 1600, fill: t.outside }, svg);
+  el('path', { d: cityPath, fill: t.land, stroke: t.edge, 'stroke-width': 1.5 }, svg);
+  const g = {}; g.cells = el('g', {}, svg);
+  const water = el('g', { fill: t.water }, svg);
+  for (const d of ['M430 150 q30 -22 62 -8 q30 10 52 -6 q22 -10 34 8 q-10 18 -34 16 q-28 6 -52 12 q-36 6 -62 -22z', 'M285 285 q22 -12 34 6 q4 16 -14 22 q-22 2 -20 -28z', 'M598 196 q26 -10 46 6 q-8 14 -28 10 q-14 -2 -18 -16z']) el('path', { d }, water);
+  el('path', { d: 'M150 262 Q300 300 400 372 T500 396 T640 470 T860 560', fill: 'none', stroke: t.water, 'stroke-width': 6, 'stroke-linecap': 'round' }, svg);
+  g.parks = el('g', { fill: t.park, opacity: t.parkOpacity ?? 0.6, 'pointer-events': 'none' }, svg);
+  for (const [x, y, rx, ry] of parks) el('ellipse', { cx: x, cy: y, rx, ry }, g.parks);
+  g.roads = el('g', { fill: 'none', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'pointer-events': 'none' }, svg);
+  g.roadNodes = roads.map(([pts]) => el('polyline', { points: pts.map(p => p.join(',')).join(' '), 'stroke-width': 4 }, g.roads));
+  g.metro = el('g', { opacity: t.metroOpacity ?? 0.6, 'pointer-events': 'none' }, svg);
+  for (const [color, names] of lines) el('polyline', { points: names.map(n => stations[n].join(',')).join(' '), fill: 'none', stroke: t.metroLine || color, 'stroke-width': t.metroWidth || 3, 'stroke-linejoin': 'round' }, g.metro);
+  for (const [x, y] of Object.values(stations)) el('circle', { cx: x, cy: y, r: 3.4, fill: t.stationFill || '#fff', stroke: t.stationStroke || '#1c2b36', 'stroke-width': 1.5 }, g.metro);
+  g.top = el('g', {}, svg);
+  g.labels = el('g', {}, svg);
+  for (const [n, x, y] of places) el('text', { x, y, class: 'place', 'text-anchor': 'middle' }, g.labels).textContent = n;
+  return g;
+}
+const passes = (o, s, price) => price <= s.budget && o.metroMin <= s.walk && (!s.park || o.parkMin <= 15);
+function placeTip(tip, box, e) {
+  const r = box.getBoundingClientRect(); tip.style.display = 'block';
+  tip.style.left = Math.min(e.clientX - r.left + 14, r.width - tip.offsetWidth - 8) + 'px';
+  tip.style.top = Math.min(e.clientY - r.top + 14, r.height - tip.offsetHeight - 8) + 'px';
+}
+const cellTip = c => `<strong>${eur(c.price)}</strong><br>${c.area}, ${c.listings} listings<br><span>${c.metroMin} min walk to ${c.metro}<br>${c.parkMin} min walk to ${c.park}</span>`;
+const stage = document.getElementById('stage');
+const $ = s => stage.querySelector(s);
+const setTraffic = (g, s) => { g.roads.style.display = s.traffic ? '' : 'none'; g.roadNodes.forEach((n, i) => n.setAttribute('stroke', TRAFFIC[roads[i][s.noon ? 2 : 1]])); };
+
+/* ---------- Version 1: Atlas (hex cells, side panel) ---------- */
+const PRICE = [[47,127,134],[141,191,168],[242,213,138],[233,139,91],[178,58,94]];
+function atlas() {
+  queueMicrotask(() => {
+    const s = { budget: 2600, walk: 10, park: true, traffic: false, noon: false }, main = $('main'), tip = $('.tip');
+    const g = drawBase($('svg'), { outside: '#d9e0e3', land: '#e6ebed', edge: '#cfd7db', water: '#b4d0dc', park: '#bcd8b7' });
+    const nodes = cells.map(c => {
+      const n = el('path', { d: hexPath(c.x, c.y), class: 'cell', fill: mix(PRICE, priceT(c.price)) }, g.cells);
+      n.addEventListener('mousemove', e => { tip.innerHTML = cellTip(c); placeTip(tip, main, e); });
+      n.addEventListener('mouseleave', () => tip.style.display = 'none');
+      return n;
+    });
+    $('.ramp').style.background = gradient(PRICE);
+    const render = () => {
+      let ok = 0, n = 0;
+      cells.forEach((c, i) => { const p = passes(c, s, c.price); if (p) { ok++; n += c.listings; } nodes[i].style.opacity = p ? 0.95 : 0.1; });
+      setTraffic(g, s);
+      $('#a-budget-out').textContent = eur(s.budget); $('#a-walk-out').textContent = s.walk + ' min';
+      $('.count strong').textContent = fmt(n); $('.count span').textContent = `listings match, in ${Math.round(ok / cells.length * 100)}% of the city`;
+    };
+    $('#a-budget').oninput = e => { s.budget = +e.target.value; render(); };
+    $('#a-walk').oninput = e => { s.walk = +e.target.value; render(); };
+    $('#a-park').onchange = e => { s.park = e.target.checked; render(); };
+    $('#a-traffic').onchange = e => { s.traffic = e.target.checked; render(); };
+    $('#a-noon').onchange = e => { s.noon = e.target.checked; render(); };
+    render();
+  });
+  return `<div class="atlas">
+    <aside>
+      <div><h1 class="display">Where could we live?</h1><p class="sub">Sale prices per m² across Bucharest.</p></div>
+      <div>
+        <h2>Filters</h2>
+        <div class="field"><label for="a-budget">Max price <output id="a-budget-out" class="num"></output></label><input type="range" id="a-budget" min="1200" max="4600" step="100" value="2600"></div>
+        <div class="field"><label for="a-walk">Walk to metro <output id="a-walk-out" class="num"></output></label><input type="range" id="a-walk" min="5" max="25" value="10"></div>
+        <label class="check"><input type="checkbox" id="a-park" checked> Park within 15 min walk</label>
+        <label class="check"><input type="checkbox" id="a-traffic"> Show traffic</label>
+        <label class="check" style="margin-left:24px;font-weight:400"><input type="checkbox" id="a-noon"> At 13:00 instead of 8:30</label>
+      </div>
+      <p class="note">Sample data. Prices, metro stops and parks are placed approximately.</p>
+    </aside>
+    <main>
+      <svg class="map" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Price map"></svg>
+      <div class="float count"><strong class="display num"></strong><span></span></div>
+      <div class="float legend"><b>Asking price per m²</b><div class="ramp"></div><div class="ticks num"><span>1 200 €</span><span>2 800 €</span><span>4 500 €</span></div></div>
+      <div class="tip"></div>
+    </main>
+  </div>`;
+}
+
+/* ---------- Version 2: Night (smooth glow, floating bar, readout legend) ---------- */
+const GLOW = [[34,84,140],[38,160,165],[240,212,112],[246,134,72],[236,72,118]];
+function night() {
+  queueMicrotask(() => {
+    const s = { budget: 2600, walk: 10, park: true, traffic: false, noon: false }, svg = $('svg');
+    const defs = el('defs', {}, svg);
+    el('feGaussianBlur', { stdDeviation: 9 }, el('filter', { id: 'n-blur', x: '-10%', y: '-10%', width: '120%', height: '120%' }, defs));
+    el('path', { d: cityPath }, el('clipPath', { id: 'n-clip' }, defs));
+    const g = drawBase(svg, { outside: '#0c1826', land: '#132335', edge: '#1d3148', water: '#0a2a44', park: '#1f4a3c', parkOpacity: 0.5, metroLine: '#dfe8f2', metroWidth: 1.6, metroOpacity: 0.55, stationFill: '#0c1826', stationStroke: '#dfe8f2' });
+    g.cells.setAttribute('clip-path', 'url(#n-clip)');
+    const glow = el('g', { filter: 'url(#n-blur)' }, g.cells);
+    const nodes = cells.map(c => el('path', { d: hexPath(c.x, c.y, R + 1.5), class: 'cell', fill: mix(GLOW, priceT(c.price)) }, glow));
+    const big = $('.big'), where = $('.where'), mark = $('.mark');
+    const idle = () => { big.textContent = 'Hover the map'; where.textContent = 'Move over any area to read its price and walking times.'; mark.style.display = 'none'; };
+    cells.forEach(c => {
+      const h = el('path', { d: hexPath(c.x, c.y), class: 'hit' }, g.top);
+      h.addEventListener('mouseenter', () => {
+        big.textContent = eur(c.price); mark.style.display = 'block'; mark.style.left = Math.min(100, Math.max(0, priceT(c.price) * 100)) + '%';
+        where.textContent = `${c.area}, ${c.listings} listings. ${c.metroMin} min to ${c.metro} metro, ${c.parkMin} min to ${c.park}.`;
+      });
+    });
+    g.top.addEventListener('mouseleave', idle); idle();
+    $('.ramp').style.background = gradient(GLOW);
+    const render = () => {
+      let n = 0;
+      cells.forEach((c, i) => { const p = passes(c, s, c.price); if (p) n += c.listings; nodes[i].style.opacity = p ? 0.92 : 0.05; });
+      setTraffic(g, s);
+      $('#n-budget-out').textContent = eur(s.budget); $('#n-walk-out').textContent = s.walk + ' min'; $('.matches').textContent = fmt(n) + ' listings match';
+    };
+    $('#n-budget').oninput = e => { s.budget = +e.target.value; render(); };
+    $('#n-walk').oninput = e => { s.walk = +e.target.value; render(); };
+    $('#n-park').onchange = e => { s.park = e.target.checked; render(); };
+    $('#n-traffic').onchange = e => { s.traffic = e.target.checked; render(); };
+    $('#n-noon').onchange = e => { s.noon = e.target.checked; render(); };
+    render();
+  });
+  return `<div class="night">
+    <svg class="map" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Price map"></svg>
+    <div class="glass bar">
+      <span class="title display">Bucharest by price</span>
+      <div class="ctl"><label for="n-budget">Max price <output id="n-budget-out" class="num"></output></label><input type="range" id="n-budget" min="1200" max="4600" step="100" value="2600"></div>
+      <div class="ctl"><label for="n-walk">Walk to metro <output id="n-walk-out" class="num"></output></label><input type="range" id="n-walk" min="5" max="25" value="10"></div>
+      <label class="check"><input type="checkbox" id="n-park" checked> Park nearby</label>
+      <label class="check"><input type="checkbox" id="n-traffic"> Traffic</label>
+      <label class="check"><input type="checkbox" id="n-noon"> 13:00</label>
+    </div>
+    <div class="glass legend">
+      <div class="big display num"></div>
+      <div class="where"></div>
+      <div class="ramp"><span class="mark"></span></div>
+      <div class="ticks num"><span>1 200 €</span><span class="matches"></span><span>4 500 €</span></div>
+    </div>
+    <p class="sample">Sample data. Prices, metro stops and parks are placed approximately.</p>
+  </div>`;
+}
+
+/* ---------- Version 3: Listings (list drives the map, areas and pins) ---------- */
+const AREA = [[226,229,238],[160,170,212],[84,94,166]];
+function lists() {
+  queueMicrotask(() => {
+    const s = { budget: 2600, walk: 10, park: true }, ol = $('ol');
+    const g = drawBase($('svg'), { outside: '#eef0f3', land: '#e3e5ea', edge: '#d3d6dd', water: '#bcd3e0', park: '#c6dcc2', metroOpacity: 0.45 });
+    const nodes = cells.map(c => { const f = mix(AREA, priceT(median[c.area])); return el('path', { d: hexPath(c.x, c.y), class: 'cell', fill: f, stroke: f, 'stroke-width': 1.2 }, g.cells); });
+    const tone = l => l.delta <= -5 ? ['under', '#1b7a50'] : l.delta >= 5 ? ['over', '#b0413a'] : ['near', '#4a5361'];
+    const deltaText = l => l.delta === 0 ? `At the ${l.area} median` : `${Math.abs(l.delta)}% ${l.delta < 0 ? 'under' : 'over'} the ${l.area} median`;
+    const pins = {};
+    const hot = (id, on) => { pins[id]?.classList.toggle('hot', on); ol.querySelector(`[data-id="${id}"]`)?.classList.toggle('hot', on); if (on && pins[id]) g.top.appendChild(pins[id]); };
+    const render = () => {
+      cells.forEach((c, i) => nodes[i].style.opacity = passes(c, s, c.price) ? 1 : 0.22);
+      const ok = listings.filter(l => passes(l, s, l.ppm)).sort((a, b) => a.delta - b.delta);
+      g.top.replaceChildren();
+      for (const l of listings) if (!ok.includes(l)) el('circle', { cx: l.x, cy: l.y, r: 2.5, fill: '#8a909c', opacity: 0.6 }, g.top);
+      for (const l of ok) {
+        const p = pins[l.id] = el('g', { class: 'pin', transform: `translate(${l.x.toFixed(1)} ${l.y.toFixed(1)})` }, g.top);
+        el('rect', { x: -19, y: -10, width: 38, height: 20, rx: 4, fill: tone(l)[1] }, p);
+        el('text', { y: 4 }, p).textContent = Math.round(l.total / 1000) + 'k';
+        p.addEventListener('mouseenter', () => hot(l.id, true)); p.addEventListener('mouseleave', () => hot(l.id, false));
+        p.addEventListener('click', () => ol.querySelector(`[data-id="${l.id}"]`).scrollIntoView({ block: 'center' }));
+      }
+      ol.innerHTML = ok.length ? ok.map(l => `<li data-id="${l.id}">
+          <div class="row"><span class="price display num">${fmt(l.total)} €</span><span class="delta ${tone(l)[0]}">${deltaText(l)}</span></div>
+          <div class="what">${l.rooms === 1 ? 'Garsonieră' : l.rooms + ' camere'}, ${l.m2} m², etaj ${l.floor}, ${l.year}</div>
+          <div class="meta num">${eur(l.ppm)}. ${l.metroMin} min to ${l.metro} metro, ${l.parkMin} min to ${l.park}.</div>
+          <a href="${l.src[1]}" target="_blank" rel="noopener">Open on ${l.src[0]}</a>
+        </li>`).join('') : `<li class="empty"><b>Nothing matches these filters</b>Raise the max price or allow a longer walk to the metro.</li>`;
+      $('#l-budget-out').textContent = eur(s.budget); $('#l-walk-out').textContent = s.walk + ' min';
+      $('.sub').textContent = `${ok.length} of ${listings.length} apartments for sale match, best value first`;
+    };
+    ol.addEventListener('mouseover', e => { const li = e.target.closest('li[data-id]'); if (li) hot(li.dataset.id, true); });
+    ol.addEventListener('mouseout', e => { const li = e.target.closest('li[data-id]'); if (li && !li.contains(e.relatedTarget)) hot(li.dataset.id, false); });
+    $('#l-budget').oninput = e => { s.budget = +e.target.value; render(); };
+    $('#l-walk').oninput = e => { s.walk = +e.target.value; render(); };
+    $('#l-park').onchange = e => { s.park = e.target.checked; render(); };
+    render();
+  });
+  return `<div class="lists">
+    <div class="side">
+      <header>
+        <h1 class="display">Apartments worth a look</h1><p class="sub"></p>
+        <div class="filters">
+          <div><label for="l-budget">Max price <output id="l-budget-out" class="num"></output></label><input type="range" id="l-budget" min="1200" max="4600" step="100" value="2600"></div>
+          <div><label for="l-walk">Walk to metro <output id="l-walk-out" class="num"></output></label><input type="range" id="l-walk" min="5" max="25" value="10"></div>
+          <label class="check"><input type="checkbox" id="l-park" checked> Park within 15 min walk</label>
+        </div>
+      </header>
+      <ol></ol>
+      <div class="foot">Sample listings. Links open each site's home page.</div>
+    </div>
+    <main>
+      <svg class="map" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Listings map"></svg>
+      <div class="legend"><span><i style="background:#1b7a50"></i>Under its area median</span><span><i style="background:#4a5361"></i>Near the median</span><span><i style="background:#b0413a"></i>Over the median</span><span><i style="background:linear-gradient(90deg,#e2e5ee,#545ea6);width:28px"></i>Area median, low to high</span></div>
+    </main>
+  </div>`;
+}
+
+/* ---------- Version 4: Blend (Atlas price cells with the Listings panel) ---------- */
+function blend() {
+  queueMicrotask(() => {
+    const s = { budget: 2600, walk: 10, park: true, traffic: false, noon: false, area: null }, ol = $('ol'), main = $('main'), tip = $('.tip');
+    const g = drawBase($('svg'), { outside: '#d9e0e3', land: '#e6ebed', edge: '#cfd7db', water: '#b4d0dc', park: '#bcd8b7' });
+    const nodes = cells.map(c => {
+      const n = el('path', { d: hexPath(c.x, c.y), class: 'cell', fill: mix(PRICE, priceT(c.price)) }, g.cells);
+      n.addEventListener('mousemove', e => { tip.innerHTML = cellTip(c) + '<br><span>Click to list only ' + c.area + '</span>'; placeTip(tip, main, e); });
+      n.addEventListener('mouseleave', () => tip.style.display = 'none');
+      n.addEventListener('click', () => { s.area = s.area === c.area ? null : c.area; render(); });
+      return n;
+    });
+    $('.ramp').style.background = gradient(PRICE);
+    const tone = l => l.delta <= -5 ? ['under', '#1b7a50'] : l.delta >= 5 ? ['over', '#b0413a'] : ['near', '#4a5361'];
+    const deltaText = l => l.delta === 0 ? `At the ${l.area} median` : `${Math.abs(l.delta)}% ${l.delta < 0 ? 'under' : 'over'} the ${l.area} median`;
+    const pins = {};
+    const hot = (id, on) => { pins[id]?.classList.toggle('hot', on); ol.querySelector(`[data-id="${id}"]`)?.classList.toggle('hot', on); if (on && pins[id]) g.top.appendChild(pins[id]); };
+    const render = () => {
+      cells.forEach((c, i) => nodes[i].style.opacity = !passes(c, s, c.price) ? 0.1 : s.area && c.area !== s.area ? 0.4 : 0.95);
+      const all = listings.filter(l => passes(l, s, l.ppm)).sort((a, b) => a.delta - b.delta);
+      const ok = s.area ? all.filter(l => l.area === s.area) : all;
+      g.top.replaceChildren();
+      for (const l of listings) if (!ok.includes(l)) el('circle', { cx: l.x, cy: l.y, r: 2.8, fill: '#44505a', stroke: '#fff', 'stroke-width': 1, opacity: 0.7, 'pointer-events': 'none' }, g.top);
+      for (const l of ok) {
+        const p = pins[l.id] = el('g', { class: 'pin', transform: `translate(${l.x.toFixed(1)} ${l.y.toFixed(1)})` }, g.top);
+        el('rect', { x: -19, y: -10, width: 38, height: 20, rx: 4, stroke: tone(l)[1] }, p);
+        el('text', { y: 4 }, p).textContent = Math.round(l.total / 1000) + 'k';
+        p.addEventListener('mouseenter', () => hot(l.id, true)); p.addEventListener('mouseleave', () => hot(l.id, false));
+        p.addEventListener('click', () => ol.querySelector(`[data-id="${l.id}"]`).scrollIntoView({ block: 'center' }));
+      }
+      ol.innerHTML = ok.length ? ok.map(l => `<li data-id="${l.id}">
+          <div class="row"><span class="price display num">${fmt(l.total)} €</span><span class="delta ${tone(l)[0]}">${deltaText(l)}</span></div>
+          <div class="what">${l.rooms === 1 ? 'Garsonieră' : l.rooms + ' camere'}, ${l.m2} m², etaj ${l.floor}, ${l.year}</div>
+          <div class="meta num">${eur(l.ppm)}. ${l.metroMin} min to ${l.metro} metro, ${l.parkMin} min to ${l.park}.</div>
+          <a href="${l.src[1]}" target="_blank" rel="noopener">Open on ${l.src[0]}</a>
+        </li>`).join('') : `<li class="empty"><b>Nothing matches ${s.area ? 'in ' + s.area : 'these filters'}</b>${s.area ? 'Show all areas, or loosen the filters.' : 'Raise the max price or allow a longer walk to the metro.'}</li>`;
+      setTraffic(g, s);
+      $('.areabar').style.display = s.area ? 'flex' : 'none'; $('.areabar span').textContent = `Showing ${s.area} only`;
+      $('#b-budget-out').textContent = eur(s.budget); $('#b-walk-out').textContent = s.walk + ' min';
+      $('.sub').textContent = `${all.length} of ${listings.length} apartments match, best value first`;
+    };
+    ol.addEventListener('mouseover', e => { const li = e.target.closest('li[data-id]'); if (li) hot(li.dataset.id, true); });
+    ol.addEventListener('mouseout', e => { const li = e.target.closest('li[data-id]'); if (li && !li.contains(e.relatedTarget)) hot(li.dataset.id, false); });
+    $('.areabar button').onclick = () => { s.area = null; render(); };
+    $('#b-budget').oninput = e => { s.budget = +e.target.value; render(); };
+    $('#b-walk').oninput = e => { s.walk = +e.target.value; render(); };
+    $('#b-park').onchange = e => { s.park = e.target.checked; render(); };
+    $('#b-traffic').onchange = e => { s.traffic = e.target.checked; render(); };
+    $('#b-noon').onchange = e => { s.noon = e.target.checked; render(); };
+    render();
+  });
+  return `<div class="lists blend">
+    <div class="side">
+      <header>
+        <h1 class="display">Where could we live?</h1><p class="sub"></p>
+        <div class="filters">
+          <div><label for="b-budget">Max price <output id="b-budget-out" class="num"></output></label><input type="range" id="b-budget" min="1200" max="4600" step="100" value="2600"></div>
+          <div><label for="b-walk">Walk to metro <output id="b-walk-out" class="num"></output></label><input type="range" id="b-walk" min="5" max="25" value="10"></div>
+          <label class="check"><input type="checkbox" id="b-park" checked> Park within 15 min walk</label>
+          <label class="check" style="grid-column:auto"><input type="checkbox" id="b-traffic"> Show traffic</label>
+          <label class="check" style="grid-column:auto"><input type="checkbox" id="b-noon"> At 13:00, not 8:30</label>
+        </div>
+      </header>
+      <div class="areabar"><span></span><button type="button">Show all areas</button></div>
+      <ol></ol>
+      <div class="foot">Sample listings. Links open each site's home page.</div>
+    </div>
+    <main>
+      <svg class="map" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Price map with listings"></svg>
+      <div class="plegend"><b>Asking price per m²</b><div class="ramp"></div><div class="ticks num"><span>1 200 €</span><span>2 800 €</span><span>4 500 €</span></div></div>
+      <div class="tip"></div>
+    </main>
+  </div>`;
+}
+
+/* ---------- Picker wiring (from the prototype spec) ---------- */
+const variants = [atlas, night, lists, blend];
+const picker = document.querySelector('.proto-picker');
+const highlight = picker.querySelector('.proto-picker-highlight');
+const items = [...picker.querySelectorAll('.proto-picker-item:not(.proto-picker-replay)')];
+const replay = picker.querySelector('.proto-picker-replay');
+let current = 0;
+
+function moveHighlight() {
+  const el = items[current];
+  highlight.style.width = el.offsetWidth + 'px';
+  highlight.style.transform = `translateX(${el.offsetLeft}px)`;
+}
+
+function mount(i) {
+  stage.innerHTML = '';
+  // Clear first, render next frame, so entrance animations re-run.
+  requestAnimationFrame(() => { stage.innerHTML = variants[i](); });
+}
+
+function setActive(i) {
+  if (i < 0 || i >= variants.length) return;
+  current = i;
+  items.forEach((el, j) => {
+    el.toggleAttribute('data-active', j === i);
+    if (j === i) el.setAttribute('aria-current', 'true');
+    else el.removeAttribute('aria-current');
+  });
+  moveHighlight();
+  const url = new URL(location);
+  url.searchParams.set('v', i + 1);
+  history.replaceState(null, '', url);
+  mount(i);
+}
+
+items.forEach((el, i) => el.addEventListener('click', () => setActive(i)));
+replay?.addEventListener('click', () => mount(current));
+window.addEventListener('resize', moveHighlight);
+
+document.addEventListener('keydown', (e) => {
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) || e.target.isContentEditable) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const num = parseInt(e.key, 10);
+  if (num >= 1 && num <= variants.length) setActive(num - 1);
+  else if (e.key === 'ArrowRight') setActive((current + 1) % variants.length);
+  else if (e.key === 'ArrowLeft') setActive((current - 1 + variants.length) % variants.length);
+  else if (e.key === 'r' || e.key === 'R') mount(current);
+});
+
+const requested = parseInt(new URLSearchParams(location.search).get('v'), 10);
+setActive(requested >= 1 && requested <= variants.length ? requested - 1 : 0);
+// Enable the slide only after first paint, so load doesn't animate.
+requestAnimationFrame(() => requestAnimationFrame(() => picker.setAttribute('data-ready', '')));
+</script>
+</body>
+</html>

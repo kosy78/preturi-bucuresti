@@ -1,0 +1,8 @@
+node_modules
+.env*
+/data/
+web/public/data/listings.json
+web/public/data/meta.json
+web/dist
+.superpowers/
+.DS_Store
